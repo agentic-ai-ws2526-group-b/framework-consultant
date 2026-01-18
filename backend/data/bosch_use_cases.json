@@ -1,0 +1,225 @@
+{
+  "version": "1.0",
+  "source": "POC_CustomerFeedback.pptx (Google Agentspace PoCs) – manual structured export",
+  "use_cases": [
+    {
+      "id": "bosch_uc_001",
+      "agent_name": "R&D Innovation & Competitive Intelligence Scout Agent",
+      "use_case_description": "Recherche- und Scout-Agent zur Identifikation von Innovationen, Trends, Wettbewerberbewegungen und relevanten Signalen für F&E und Strategie.",
+      "inputs": ["Themengebiet/Technologie", "Wettbewerber/Marktsegment", "Suchbegriffe/Quellen", "Zeitfenster"],
+      "outputs": ["Trend-/Signal-Report", "Quellenliste", "Zusammenfassung mit Handlungshinweisen"],
+      "benefits": ["Schnelle Research-Ergebnisse mit Standard-Tools", "Skalierbare Wissensbeschaffung"],
+      "limitations": ["Qualität hängt von Connector-/Berechtigungssetup ab", "Feinjustierung für zuverlässigen Betrieb notwendig"],
+      "tags": ["knowledge-management", "research", "competitive-intelligence", "search", "rag"],
+      "evidence": "Knowledge agents perform very good with only less effort; connectors available, but internal challenges to integrate. Research can be easily done by standard tools of Agentspace.",
+      "recommended_for": { "experience_level": "beginner", "learning_preference": "simple" }
+    },
+    {
+      "id": "bosch_uc_002",
+      "agent_name": "Technical Documentation Q&A Agent",
+      "use_case_description": "Q&A-Agent für technische Dokumentation: beantwortet Fragen aus internen Dokuquellen (z.B. Handbücher, Spezifikationen) und verweist auf relevante Passagen.",
+      "inputs": ["Technische Frage", "Produkt/Komponente", "Dokumentenquelle/Scope"],
+      "outputs": ["Antwort mit Quellenhinweisen", "Relevante Dokumentauszüge", "Empfohlene nächste Schritte"],
+      "benefits": ["Standard-RAG-Agent schnell umgesetzt", "Gute Ergebnisse bei geringem Aufwand"],
+      "limitations": ["Connector- und Berechtigungsfragen müssen geklärt werden"],
+      "tags": ["knowledge-management", "rag", "documentation", "qa", "sharepoint"],
+      "evidence": "The creation of a 'standard' RAG-Agent was achieved within short time (low effort) and with good results. SharePoint integration found effective; connectors need clarification (permissions, etc.).",
+      "recommended_for": { "experience_level": "beginner", "learning_preference": "simple" }
+    },
+    {
+      "id": "bosch_uc_003",
+      "agent_name": "Global Regulatory & Standards Compliance Advisor",
+      "use_case_description": "Compliance-Advisor zur Unterstützung bei regulatorischen Anforderungen und Normen; liefert Hinweise, Checklisten und Verweise auf relevante Standards.",
+      "inputs": ["Land/Region", "Norm/Standard", "Produktbereich", "Fragestellung/Anforderung"],
+      "outputs": ["Compliance-Hinweise", "Checkliste/Empfehlungen", "Quellen/Referenzen"],
+      "benefits": ["Schneller Zugriff auf Wissen", "Unterstützung bei standardisierten Fragen"],
+      "limitations": ["Erfordert gute Datenbasis und Connector-Setup", "Feinjustierung für zuverlässige Nutzung nötig"],
+      "tags": ["knowledge-management", "compliance", "standards", "advisory"],
+      "evidence": "Agentspace PoC demonstrated promising results; with additional fine-tuning could serve as reliable addition.",
+      "recommended_for": { "experience_level": "intermediate", "learning_preference": "learn" }
+    },
+    {
+      "id": "bosch_uc_004",
+      "agent_name": "Generative Engineering Knowledge Assistant",
+      "use_case_description": "Assistent für Engineering-Wissen (Best Practices, Guidelines, interne Wissensartikel) zur schnellen Beantwortung von Fragen und Erstellung von Zusammenfassungen.",
+      "inputs": ["Engineering-Frage", "Thema/Komponente", "Kontext aus Projekten/Dokumenten"],
+      "outputs": ["Strukturierte Antwort", "Zusammenfassung", "Vorschläge/Optionen"],
+      "benefits": ["Sehr gute Performance von Knowledge Agents bei geringem Aufwand"],
+      "limitations": ["Connector-Integration intern herausfordernd (Permissions etc.)"],
+      "tags": ["knowledge-management", "engineering", "assistant", "rag"],
+      "evidence": "Knowledge agents perform very good with only less effort; connectors feasible but much clarification needed (permissions, etc.).",
+      "recommended_for": { "experience_level": "beginner", "learning_preference": "simple" }
+    },
+    {
+      "id": "bosch_uc_005",
+      "agent_name": "Dynamic Skill & Competency Hub Agent",
+      "use_case_description": "Agent zur Erfassung, Strukturierung und Auffindbarkeit von Skills/Kompetenzen (z.B. für Projektbesetzung, Skill-Gaps, Lernpfade).",
+      "inputs": ["Rollen/Skill-Anforderungen", "Team-/Mitarbeiterprofile", "Projektanforderungen"],
+      "outputs": ["Skill-Matching", "Gap-Analyse", "Empfehlungen für Qualifizierung"],
+      "benefits": ["Wissensbasierte Auswertungen mit geringer Einrichtungszeit möglich"],
+      "limitations": ["Datenanbindung (HR/Skillsysteme) über Connectoren organisatorisch klärungsbedürftig"],
+      "tags": ["knowledge-management", "skills", "hr", "matching"],
+      "evidence": "Our Google AgentSpace PoC demonstrated very promising results; could serve as powerful addition with fine-tuning.",
+      "recommended_for": { "experience_level": "intermediate", "learning_preference": "learn" }
+    },
+    {
+      "id": "bosch_uc_006",
+      "agent_name": "New Hires Onboarding Agent",
+      "use_case_description": "Onboarding-Agent für neue Mitarbeitende: liefert Antworten zu Prozessen, Tools, Ansprechpartnern und stellt relevante Informationen strukturiert bereit.",
+      "inputs": ["Onboarding-Frage", "Rolle/Standort", "Onboarding-Phase"],
+      "outputs": ["Schritt-für-Schritt Anleitung", "Links/Dokumente", "FAQ-Antworten"],
+      "benefits": ["Agent funktioniert sehr gut (positives Feedback)", "Schnelle Nutzbarkeit in der Praxis möglich"],
+      "limitations": ["Vollständigkeit hängt von verfügbaren internen Quellen/Connectoren ab"],
+      "tags": ["knowledge-management", "hr", "onboarding", "assistant"],
+      "evidence": "The Agent works really good.",
+      "recommended_for": { "experience_level": "beginner", "learning_preference": "simple" }
+    },
+
+    {
+      "id": "bosch_uc_007",
+      "agent_name": "Remote Diagnostics & Guided Repair",
+      "use_case_description": "Service-Agent zur Remote-Diagnose von Problemen und zur geführten Reparatur/Fehlersuche mit Schritt-für-Schritt Unterstützung.",
+      "inputs": ["Fehlerbeschreibung", "Geräte-/Produktdaten", "Logs/Fehlercodes", "Fotos/Anhänge (optional)"],
+      "outputs": ["Diagnose-Hypothesen", "Reparatur-Checkliste", "Empfohlene Maßnahmen"],
+      "benefits": ["Kann unterschiedliche Inputs verarbeiten und Empfehlungen geben"],
+      "limitations": ["Für produktiven Einsatz ggf. Anbindung an Real-Time/Historic Data erforderlich"],
+      "tags": ["service-management", "diagnostics", "guided-repair", "recommendations"],
+      "evidence": "Agent can handle and process different inputs, analyse and provide recommendations. POC shows potential to extend scope and use real-time/historical data for productive usage.",
+      "recommended_for": { "experience_level": "intermediate", "learning_preference": "simple" }
+    },
+    {
+      "id": "bosch_uc_008",
+      "agent_name": "Proactive Field Service Dispatch & Optimization Agent",
+      "use_case_description": "Agent zur proaktiven Steuerung und Optimierung von Field-Service-Einsätzen (Priorisierung, Routing, Ressourcenplanung).",
+      "inputs": ["Service-Tickets", "Ressourcen-/Technikerverfügbarkeit", "Standorte/Termine", "Prioritätsregeln"],
+      "outputs": ["Dispatch-Vorschläge", "Optimierte Einsatzpläne", "Priorisierte Ticketlisten"],
+      "benefits": ["Skalierbares Potenzial durch Analyse und Prozessunterstützung"],
+      "limitations": ["Produktiver Nutzen steigt stark mit Datenanbindungen und Fine-Tuning"],
+      "tags": ["service-management", "dispatch", "optimization", "planning"],
+      "evidence": "Agent can handle complex processes and generates valuable insights with lots of potential for scaling.",
+      "recommended_for": { "experience_level": "expert", "learning_preference": "learn" }
+    },
+    {
+      "id": "bosch_uc_009",
+      "agent_name": "AI-Driven Warranty Adjudication & Fraud Detection Agent",
+      "use_case_description": "Agent zur Unterstützung bei Garantieentscheidungen und zur Erkennung potenzieller Betrugsfälle durch Musteranalyse und Regel-/Policy-Abgleich.",
+      "inputs": ["Warranty-Claim Daten", "Historische Claims", "Policy-Regeln", "Hinweise/Anlagen"],
+      "outputs": ["Risikobewertung", "Entscheidungsvorschlag", "Begründung/Indikatoren"],
+      "benefits": ["Ermöglicht wertvolle Insights und Empfehlungsausgaben"],
+      "limitations": ["Erfordert Datenqualität, Governance und ggf. Echtzeit-/Historienzugriff"],
+      "tags": ["service-management", "warranty", "fraud-detection", "analytics"],
+      "evidence": "POC shows potential to extend scope and use real-time/historical data for productive usage.",
+      "recommended_for": { "experience_level": "intermediate", "learning_preference": "learn" }
+    },
+    {
+      "id": "bosch_uc_010",
+      "agent_name": "Automated Service Contract Compliance & SLA Monitoring Agent",
+      "use_case_description": "Agent zur Überwachung von Serviceverträgen und SLAs (Einhaltung, Abweichungen, Reporting) mit automatisierten Alerts.",
+      "inputs": ["Vertragsdaten/SLA-KPIs", "Ticket-/Incident-Daten", "Zeitstempel/Status", "Regeln/Thresholds"],
+      "outputs": ["Compliance-Status", "SLA-Verletzungswarnungen", "Reports/Dashboards (Text)"],
+      "benefits": ["Unterstützt skalierbare Auswertung von Prozessen und KPIs"],
+      "limitations": ["Starker Wert abhängig von Integration in Ticketsysteme/Connectoren"],
+      "tags": ["service-management", "sla", "compliance", "monitoring"],
+      "evidence": "Connectors available, but clarification needed (permissions, etc.).",
+      "recommended_for": { "experience_level": "intermediate", "learning_preference": "learn" }
+    },
+    {
+      "id": "bosch_uc_011",
+      "agent_name": "AI Service Knowledge Navigator",
+      "use_case_description": "Navigator-Agent für Service-Wissen (Troubleshooting, Wissensartikel, Handbücher) zur schnellen Beantwortung von Servicefragen.",
+      "inputs": ["Servicefrage", "Produkt/Serie", "Symptome/Fehlercodes"],
+      "outputs": ["Empfohlene Lösungsschritte", "Relevante Wissensartikel", "Zusammenfassung"],
+      "benefits": ["Gute Ergebnisse mit Standard-Knowledge-Ansatz möglich"],
+      "limitations": ["Connector-Integration und Rechte müssen organisatorisch gelöst werden"],
+      "tags": ["service-management", "knowledge", "rag", "support"],
+      "evidence": "Knowledge agents perform very good with only less effort; connectors feasible but much clarification needed.",
+      "recommended_for": { "experience_level": "beginner", "learning_preference": "simple" }
+    },
+
+    {
+      "id": "bosch_uc_012",
+      "agent_name": "AI-powered Marketing Content Idea & Brief Generator",
+      "use_case_description": "Agent zur Generierung von Content-Ideen und Briefings für Marketing (Themen, Messaging, Varianten) passend zu Zielgruppen/Produkten.",
+      "inputs": ["Produkt/Angebot", "Zielgruppe", "Kanal (z.B. Web, Social, Mail)", "Kampagnenziel"],
+      "outputs": ["Ideenliste", "Briefing-Text", "Content-Varianten"],
+      "benefits": ["Spart Zeit und Kosten durch schnelle Ideengenerierung"],
+      "limitations": ["Corporate Design/Brand-Checks erfordern Stabilität und Iterationen"],
+      "tags": ["marketing", "content", "ideation", "productivity"],
+      "evidence": "Testing of campaigns with fictional target groups works well and will save time and money. Corporate Design check works well, stability to be achieved in further iterations.",
+      "recommended_for": { "experience_level": "beginner", "learning_preference": "simple" }
+    },
+    {
+      "id": "bosch_uc_013",
+      "agent_name": "Market Campaign Assistant",
+      "use_case_description": "Agent zur Unterstützung bei Kampagnenplanung, -entwurf und -testing (inkl. fiktiver Zielgruppen) zur schnelleren Iteration.",
+      "inputs": ["Kampagnenidee", "Zielgruppe", "Budgetrahmen (optional)", "Key Messages"],
+      "outputs": ["Kampagnen-Entwurf", "Varianten/Testszenarien", "Empfehlungen"],
+      "benefits": ["Zeit- und Kosteneinsparung durch schnellere Tests"],
+      "limitations": ["Für produktiven Einsatz evtl. Echtzeit-/Historien-Datenintegration notwendig"],
+      "tags": ["marketing", "campaign", "testing", "recommendations"],
+      "evidence": "Testing of campaigns with fictional target groups works well and will save time and money. POC shows potential to extend scope and use real-time/historical data for productive usage.",
+      "recommended_for": { "experience_level": "beginner", "learning_preference": "simple" }
+    },
+    {
+      "id": "bosch_uc_014",
+      "agent_name": "Predictive Market Trend & Opportunity Identification Agent",
+      "use_case_description": "Agent zur Identifikation von Markttrends und Opportunities durch Research und Analyse öffentlich/privat verfügbarer Informationen.",
+      "inputs": ["Markt/Segment", "Region", "Zeitraum", "Wettbewerber/Peers"],
+      "outputs": ["Trend- und Opportunity-Liste", "Kurzanalysen", "Quellen und Evidenzpunkte"],
+      "benefits": ["Research über Standard-Tools gut möglich; skalierbar"],
+      "limitations": ["Abhängigkeit von Datenzugang/Connectoren und deren Berechtigungen"],
+      "tags": ["marketing", "market-intelligence", "trends", "research"],
+      "evidence": "Research can be easily done by standard tools of Agentspace. Connectors feasible but clarification needed (permissions, etc.).",
+      "recommended_for": { "experience_level": "intermediate", "learning_preference": "learn" }
+    },
+    {
+      "id": "bosch_uc_015",
+      "agent_name": "AI-Powered Marketing Budget Allocation & ROI Optimization Advisor",
+      "use_case_description": "Advisor-Agent zur Budgetallokation und ROI-Optimierung (Szenarien, Empfehlungen) basierend auf Regeln und verfügbaren Kampagnendaten.",
+      "inputs": ["Budgetrahmen", "Kanäle", "Kampagnenziele", "Historische KPI-Daten (optional)"],
+      "outputs": ["Budget-Vorschläge", "ROI-Szenarien", "Begründung/Annahmen"],
+      "benefits": ["Kann analysieren und Empfehlungen ableiten"],
+      "limitations": ["Mehrwert steigt stark mit realen Daten (real-time/historisch)"],
+      "tags": ["marketing", "budget", "roi", "optimization", "analytics"],
+      "evidence": "Agent can handle and process different inputs, analyse and provide recommendations. POC shows potential to extend scope and use real-time/historical data for productive usage.",
+      "recommended_for": { "experience_level": "expert", "learning_preference": "learn" }
+    },
+    {
+      "id": "bosch_uc_016",
+      "agent_name": "Personalized Sales Enablement Material Finder",
+      "use_case_description": "Agent zum Finden und Personalisieren von Sales-Enablement-Materialien (Präsentationen, One-Pager, Referenzen) passend zu Kunde/Use Case.",
+      "inputs": ["Kundensegment", "Use Case", "Produktlinie", "Einwände/Fragen"],
+      "outputs": ["Material-Empfehlungen", "Kurz-Zusammenfassungen", "Personalisierte Argumentation"],
+      "benefits": ["Schneller Zugriff auf Wissen durch Knowledge-Ansatz; potenziell starke Skalierung"],
+      "limitations": ["Connector-/Permissions-Themen bei internen Quellen"],
+      "tags": ["sales", "enablement", "knowledge", "retrieval"],
+      "evidence": "SharePoint integration effective; connectors feasible but clarification needed (permissions, etc.).",
+      "recommended_for": { "experience_level": "beginner", "learning_preference": "simple" }
+    },
+
+    {
+      "id": "bosch_uc_017",
+      "agent_name": "Automated Process Documentation & SOP Generation Assistant",
+      "use_case_description": "Assistent zur Erstellung von Prozessdokumentation und SOPs (z.B. aus vorhandenen Prozessketten/Artefakten) inkl. strukturiertem Output.",
+      "inputs": ["Prozessbeschreibung", "Artefakte (Dateien/Notizen)", "Zielformat (SOP/Checkliste)"],
+      "outputs": ["SOP-Dokument (Text)", "Schritte/Checkliste", "Rollen/Verantwortlichkeiten (optional)"],
+      "benefits": ["File extraction und einfache Anpassung von Prozessketten möglich; Low-Code-Ansatz testbar"],
+      "limitations": ["Automation erforderlich; ressourcenintensiver als reine Knowledge-Use-Cases"],
+      "tags": ["process-automation", "documentation", "sop", "low-code"],
+      "evidence": "File extraction and easy adaption of process chain; low code approach to be tested; automation required.",
+      "recommended_for": { "experience_level": "intermediate", "learning_preference": "learn" }
+    },
+    {
+      "id": "bosch_uc_018",
+      "agent_name": "AI-powered Process Discovery & Design Agent",
+      "use_case_description": "Agent zur Prozess-Discovery und Prozessdesign (Identifikation von Prozessschritten, Varianten, Optimierungspotenzial) als Grundlage für Automatisierung.",
+      "inputs": ["Ist-Prozess (Text/Artefakte)", "Zielzustand", "Constraints/Policies", "Systemlandschaft (optional)"],
+      "outputs": ["Prozessentwurf", "Optimierungsvorschläge", "Automatisierungsideen"],
+      "benefits": ["Potenzial für Erweiterung und Skalierung bei zusätzlicher Umsetzung"],
+      "limitations": ["Pure process automation use cases sind ressourcenintensiv und kein idealer Match für Agentspace ohne zusätzlichen Aufwand"],
+      "tags": ["process-automation", "process-discovery", "process-design", "optimization"],
+      "evidence": "Pure process automation use cases are resource-intensive and not an ideal match for Agentspace.",
+      "recommended_for": { "experience_level": "expert", "learning_preference": "learn" }
+    }
+  ]
+}
