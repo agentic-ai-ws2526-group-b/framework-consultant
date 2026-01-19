@@ -18,6 +18,11 @@ type FrameworkRec = {
   score: number
   description?: string
   match_reason?: string
+  pros?: string[]
+  cons?: string[]
+  recommendation?: string
+  match_percent?: number
+  url?: string
 }
 
 type BoschUseCase = {
@@ -30,18 +35,12 @@ type BoschUseCase = {
 type Phase = "form" | "bosch" | "frameworks" | "selectedUseCase"
 
 export default function Home() {
-  // ---------------------------
-  // Form state
-  // ---------------------------
   const [agentType, setAgentType] = useState("")
   const [useCase, setUseCase] = useState("")
   const [experienceLevel, setExperienceLevel] = useState("")
   const [learningPreference, setLearningPreference] = useState("")
   const [priorities, setPriorities] = useState<string[]>([])
 
-  // ---------------------------
-  // Results state
-  // ---------------------------
   const [phase, setPhase] = useState<Phase>("form")
   const [loading, setLoading] = useState(false)
 
@@ -62,12 +61,79 @@ export default function Home() {
   }, [agentType, priorities, useCase, experienceLevel, learningPreference])
 
   const togglePriority = (key: string) => {
-    setPriorities((prev) => (prev.includes(key) ? prev.filter((x) => x !== key) : [...prev, key]))
+    setPriorities((prev) =>
+      prev.includes(key) ? prev.filter((x) => x !== key) : [...prev, key]
+    )
   }
 
-  // ---------------------------
-  // API calls
-  // ---------------------------
+  const canSubmit = Boolean(agentType && useCase && experienceLevel && learningPreference)
+
+  const resetAll = () => {
+    setPhase("form")
+    setLoading(false)
+    setErrorMsg(null)
+    setBoschUseCases([])
+    setSelectedBosch(null)
+    setFrameworkResults([])
+  }
+
+  const fetchFrameworks = async (force: boolean) => {
+    setLoading(true)
+    setErrorMsg(null)
+    setFrameworkResults([])
+
+    try {
+      const payload = { ...formPayload, force_frameworks: force }
+
+      const res = await fetch("/api/agent", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+        cache: "no-store",
+      })
+
+      const data = await res.json()
+
+      if (!res.ok) {
+        throw new Error(
+          data?.detail || data?.error || "Fehler beim Laden der Frameworks."
+        )
+      }
+
+      // --- Debug (entscheidend) ---
+      console.log("RAW /api/agent response:", data)
+
+      // Fall A: Proxy gibt Backend direkt zurück
+      const direct = Array.isArray(data?.framework_recommendations)
+        ? data.framework_recommendations
+        : null
+
+      // Fall B: Proxy wrappt in { answer: "JSON_STRING" }
+      let wrapped: any = null
+      if (!direct && typeof data?.answer === "string") {
+        try {
+          wrapped = JSON.parse(data.answer)
+        } catch {
+          wrapped = null
+        }
+      }
+
+      const recs: FrameworkRec[] = direct
+        ? direct
+        : Array.isArray(wrapped?.framework_recommendations)
+          ? wrapped.framework_recommendations
+          : []
+
+      console.log("FINAL recs length:", recs.length)
+
+      setFrameworkResults(recs)
+    } catch (e: any) {
+      setErrorMsg(String(e?.message || e))
+    } finally {
+      setLoading(false)
+    }
+  }
+
   const fetchBoschUseCases = async () => {
     setLoading(true)
     setErrorMsg(null)
@@ -80,6 +146,7 @@ export default function Home() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(formPayload),
+        cache: "no-store",
       })
 
       const data = await res.json()
@@ -91,13 +158,11 @@ export default function Home() {
       const list: BoschUseCase[] = Array.isArray(data?.use_cases) ? data.use_cases : []
       setBoschUseCases(list)
 
-      // Flow: wenn es Use Cases gibt -> Bosch-Screen, sonst direkt Frameworks
       if (list.length > 0 && data?.suggest_show_frameworks === false) {
         setPhase("bosch")
       } else {
-        // Entweder keine Use Cases oder Backend empfiehlt direkt Frameworks
         setPhase("frameworks")
-        await fetchFrameworks()
+        await fetchFrameworks(true)
       }
     } catch (e: any) {
       setErrorMsg(String(e?.message || e))
@@ -107,68 +172,14 @@ export default function Home() {
     }
   }
 
-  const fetchFrameworks = async () => {
-    setLoading(true)
-    setErrorMsg(null)
-    setFrameworkResults([])
-
-    try {
-      const res = await fetch("/api/agent", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(formPayload),
-      })
-
-      const data = await res.json()
-
-      if (!res.ok) {
-        throw new Error(data?.detail || data?.error || "Fehler beim Laden der Frameworks.")
-      }
-
-      // dein Backend liefert: { answer: "JSON_STRING" }
-      let parsed: any = null
-      try {
-        parsed = JSON.parse(data?.answer ?? "{}")
-      } catch {
-        parsed = null
-      }
-
-      const recs: FrameworkRec[] = Array.isArray(parsed?.recommendations) ? parsed.recommendations : []
-      setFrameworkResults(recs)
-    } catch (e: any) {
-      setErrorMsg(String(e?.message || e))
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  // ---------------------------
-  // UI helpers
-  // ---------------------------
-  const canSubmit = Boolean(agentType && useCase && experienceLevel && learningPreference)
-
-  const resetAll = () => {
-    setPhase("form")
-    setLoading(false)
-    setErrorMsg(null)
-    setBoschUseCases([])
-    setSelectedBosch(null)
-    setFrameworkResults([])
-  }
-
-  // ---------------------------
-  // Render
-  // ---------------------------
   return (
     <div className="max-w-6xl mx-auto p-10">
-      {/* HEADER */}
       <div className="flex flex-col items-center mb-12 mt-4">
         <img src="/bosch_logo.png" alt="Bosch Logo" className="h-12 mb-3" />
         <h1 className="text-4xl font-bold tracking-tight">Framework Consultant</h1>
         <p className="text-gray-600 mt-2">Finden Sie das passende Agenten-Setup für Ihren Anwendungsfall.</p>
       </div>
 
-      {/* ERROR */}
       {errorMsg && (
         <Card className="mb-6 border-red-300">
           <CardHeader>
@@ -183,10 +194,8 @@ export default function Home() {
         </Card>
       )}
 
-      {/* FORM */}
       {phase === "form" && (
         <>
-          {/* STEP 1 */}
           <Card className="mb-6">
             <CardHeader>
               <CardTitle>Was soll dein Agent tun?</CardTitle>
@@ -208,7 +217,6 @@ export default function Home() {
             </CardContent>
           </Card>
 
-          {/* STEP 2 */}
           <Card className="mb-6">
             <CardHeader>
               <CardTitle>Was ist dir wichtig?</CardTitle>
@@ -230,7 +238,6 @@ export default function Home() {
             </CardContent>
           </Card>
 
-          {/* STEP 3 */}
           <Card className="mb-6">
             <CardHeader>
               <CardTitle>Wie gut schätzen Sie sich im Erstellen von Agenten ein?</CardTitle>
@@ -249,10 +256,9 @@ export default function Home() {
             </CardContent>
           </Card>
 
-          {/* STEP 4 */}
           <Card className="mb-6">
             <CardHeader>
-              <CardTitle>Wollen Sie etwas dazu lernen oder eine einfache Lösung basierend auf Ihren Kenntnissen umsetzen?</CardTitle>
+              <CardTitle>Wollen Sie etwas dazu lernen oder eine einfache Lösung umsetzen?</CardTitle>
             </CardHeader>
             <CardContent>
               <Select onValueChange={setLearningPreference}>
@@ -267,7 +273,6 @@ export default function Home() {
             </CardContent>
           </Card>
 
-          {/* STEP 5 */}
           <Card className="mb-6">
             <CardHeader>
               <CardTitle>Erläutere deinen Use-Case</CardTitle>
@@ -282,7 +287,6 @@ export default function Home() {
             </CardContent>
           </Card>
 
-          {/* BUTTON */}
           <Button
             className="w-full text-lg py-6 bg-[#E20015] hover:bg-[#c10012] text-white"
             onClick={fetchBoschUseCases}
@@ -299,19 +303,15 @@ export default function Home() {
         </>
       )}
 
-      {/* BOSCH USE CASES SCREEN */}
       {phase === "bosch" && (
         <>
           <div className="flex items-center justify-between mb-6">
             <h2 className="text-2xl font-semibold">Passende Bosch-Agenten / Use Cases</h2>
-            <Button variant="outline" onClick={resetAll}>
-              Zurück
-            </Button>
+            <Button variant="outline" onClick={resetAll}>Zurück</Button>
           </div>
 
           <p className="text-gray-600 mb-6">
-            Basierend auf deinen Anforderungen wurden bestehende Bosch-Use-Cases gefunden. Du kannst einen davon auswählen oder
-            alternativ Frameworks anzeigen lassen.
+            Du kannst einen Use Case auswählen oder stattdessen Frameworks anzeigen lassen.
           </p>
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
@@ -320,20 +320,14 @@ export default function Home() {
                 <CardHeader className="text-center">
                   <CardTitle className="text-xl font-bold">{uc.title}</CardTitle>
                 </CardHeader>
-
                 <CardContent className="text-center flex flex-col gap-3">
                   <p className="text-gray-600 text-sm leading-relaxed">{uc.summary}</p>
-
                   <div className="text-blue-700 font-bold text-lg mt-2">
                     {Math.round((uc.score ?? 0) * 100)}%
                   </div>
-
                   <Button
                     className="mx-auto mt-2 w-full bg-[#E20015] hover:bg-[#c10012] text-white"
-                    onClick={() => {
-                      setSelectedBosch(uc)
-                      setPhase("selectedUseCase")
-                    }}
+                    onClick={() => { setSelectedBosch(uc); setPhase("selectedUseCase") }}
                   >
                     Agent benutzen
                   </Button>
@@ -345,10 +339,7 @@ export default function Home() {
           <div className="flex justify-center mt-10">
             <Button
               className="bg-gray-900 text-white"
-              onClick={async () => {
-                setPhase("frameworks")
-                await fetchFrameworks()
-              }}
+              onClick={async () => { setPhase("frameworks"); await fetchFrameworks(true) }}
               disabled={loading}
             >
               {loading ? "Lädt..." : "Passt nicht – Frameworks anzeigen"}
@@ -357,14 +348,11 @@ export default function Home() {
         </>
       )}
 
-      {/* SELECTED USE CASE SCREEN */}
       {phase === "selectedUseCase" && selectedBosch && (
         <>
           <div className="flex items-center justify-between mb-6">
             <h2 className="text-2xl font-semibold">Ausgewählter Bosch-Agent / Use Case</h2>
-            <Button variant="outline" onClick={() => setPhase("bosch")}>
-              Zurück
-            </Button>
+            <Button variant="outline" onClick={() => setPhase("bosch")}>Zurück</Button>
           </div>
 
           <Card className="p-6 rounded-3xl border shadow-md bg-white">
@@ -373,7 +361,6 @@ export default function Home() {
             </CardHeader>
             <CardContent className="space-y-4">
               <p className="text-gray-700">{selectedBosch.summary}</p>
-
               <div className="text-blue-700 font-bold text-lg">
                 Match: {Math.round((selectedBosch.score ?? 0) * 100)}%
               </div>
@@ -381,17 +368,14 @@ export default function Home() {
               <div className="flex flex-col md:flex-row gap-3">
                 <Button
                   className="bg-[#E20015] hover:bg-[#c10012] text-white"
-                  onClick={() => alert("Nächster Schritt: Hier würdest du den Bosch-Agenten ausführen oder Details anzeigen.")}
+                  onClick={() => alert("Nächster Schritt: Bosch-Agent ausführen / Details anzeigen")}
                 >
                   Weiter
                 </Button>
 
                 <Button
                   variant="outline"
-                  onClick={async () => {
-                    setPhase("frameworks")
-                    await fetchFrameworks()
-                  }}
+                  onClick={async () => { setPhase("frameworks"); await fetchFrameworks(true) }}
                 >
                   Stattdessen Frameworks anzeigen
                 </Button>
@@ -401,14 +385,11 @@ export default function Home() {
         </>
       )}
 
-      {/* FRAMEWORKS SCREEN */}
       {phase === "frameworks" && (
         <>
           <div className="flex items-center justify-between mb-6">
             <h2 className="text-2xl font-semibold">Framework-Empfehlungen</h2>
-            <Button variant="outline" onClick={resetAll}>
-              Zurück
-            </Button>
+            <Button variant="outline" onClick={resetAll}>Zurück</Button>
           </div>
 
           {loading && <p className="text-gray-600">Lädt Framework-Empfehlungen...</p>}
@@ -420,7 +401,7 @@ export default function Home() {
               </CardHeader>
               <CardContent>
                 <p className="text-gray-600 text-sm">
-                  Es wurden keine Framework-Empfehlungen geliefert. Prüfe Backend-Konsole und /agent Response.
+                  Öffne DevTools → Console. Dort steht: "RAW /api/agent response" und "FINAL recs length".
                 </p>
               </CardContent>
             </Card>
@@ -429,7 +410,7 @@ export default function Home() {
           {frameworkResults.length > 0 && (
             <>
               <p className="text-gray-600 mb-6">
-                Diese Frameworks passen basierend auf deinen Anforderungen und dem Dokumentationskontext am besten.
+                Diese Frameworks passen basierend auf deinen Anforderungen am besten.
               </p>
 
               <div className="grid grid-cols-1 md:grid-cols-3 gap-8">

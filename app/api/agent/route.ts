@@ -1,22 +1,26 @@
-// app/api/agent/route.ts
 import { NextResponse } from "next/server"
 
 export async function POST(req: Request) {
   try {
     const body = await req.json()
 
-    const res = await fetch("http://127.0.0.1:8000/agent", {
+    const backendUrl = process.env.BACKEND_URL || "http://127.0.0.1:8000"
+    const resp = await fetch(`${backendUrl}/agent`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
+      body: JSON.stringify(body), // Body 1:1 weitergeben (force_frameworks bleibt erhalten)
       cache: "no-store",
     })
 
-    const data = await res.json()
-    return NextResponse.json(data, { status: res.status })
+    const text = await resp.text()
+
+    return new NextResponse(text, {
+      status: resp.status,
+      headers: { "Content-Type": "application/json" },
+    })
   } catch (e: any) {
     return NextResponse.json(
-      { error: "agent route failed", detail: String(e?.message ?? e) },
+      { error: e?.message || String(e) },
       { status: 500 }
     )
   }

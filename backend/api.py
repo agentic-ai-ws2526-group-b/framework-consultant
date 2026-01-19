@@ -1,7 +1,7 @@
 import os
 import json
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -59,25 +59,23 @@ class AgentRequest(BaseModel):
     experience_level: Optional[str] = None
     learning_preference: Optional[str] = None
 
+    # UI kann damit Frameworks erzwingen ("Passt nicht – Frameworks anzeigen")
+    force_frameworks: Optional[bool] = False
+
 
 class AgentResponse(BaseModel):
-    # JSON string, damit dein Frontend wie bisher JSON.parse(data.answer) machen kann
+    # JSON string, damit dein Frontend JSON.parse(data.answer) machen kann
     answer: str
 
 
 # -----------------------------------------
-# Helper: Scoring + JSON parsing
+# Helpers
 # -----------------------------------------
-def _distance_to_score(distance: Optional[float]) -> Optional[float]:
-    """Heuristik distance -> similarity score in [0, 1]."""
-    if distance is None:
-        return None
-    try:
-        d = float(distance)
-        s = 1.0 / (1.0 + d)
-        return max(0.0, min(1.0, s))
-    except Exception:
-        return None
+DIMS = ["D1", "D2", "D3", "D4", "D5", "D6"]
+
+
+def _debug_print(title: str, payload: Any) -> None:
+    print(f">>> {title}: {payload}")
 
 
 def _extract_json(text: str) -> Dict[str, Any]:
@@ -128,14 +126,20 @@ def _build_query(req: AgentRequest) -> str:
     )
 
 
-def _debug_print(title: str, payload: Any) -> None:
-    print(f">>> {title}: {payload}")
+def _distance_to_score(distance: Optional[float]) -> Optional[float]:
+    """Heuristik distance -> similarity score in [0, 1]."""
+    if distance is None:
+        return None
+    try:
+        d = float(distance)
+        s = 1.0 / (1.0 + d)
+        return max(0.0, min(1.0, s))
+    except Exception:
+        return None
 
 
 # -----------------------------------------
-# IMPORTANT FIX:
-# Normal python functions for Chroma queries
-# (so /use-cases can call them directly)
+# Chroma: Use Cases (Agents) – similarity ranking
 # -----------------------------------------
 def _query_bosch_use_cases(query: str, n_results: int = 3) -> Dict[str, Any]:
     results = usecase_collection.query(query_texts=[query], n_results=n_results)
@@ -159,14 +163,41 @@ def _query_bosch_use_cases(query: str, n_results: int = 3) -> Dict[str, Any]:
     return {"use_cases": out}
 
 
+# -----------------------------------------
+# Chroma: Framework docs query (RAG)
+# -----------------------------------------
 def _query_framework_docs(query: str, n_results: int = 3) -> Dict[str, Any]:
     results = framework_collection.query(query_texts=[query], n_results=n_results)
     docs = results.get("documents", [[]])[0]
-    return {"docs": docs}
+    metas = results.get("metadatas", [[]])[0]
+    out: List[Dict[str, Any]] = []
+    for i in range(len(docs)):
+        out.append({
+            "text": docs[i],
+            "meta": metas[i] if metas and i < len(metas) else {}
+        })
+    return {"docs": out}
+
+
+def _get_framework_snippets_for_framework(framework_name: str, query: str, n_results: int = 2) -> List[str]:
+    """
+    Holt kurze Text-Snippets aus framework_docs für ein spezifisches Framework.
+    Wir filtern auf framework=<name> und is_factsheet=False (nur Doku-Chunks).
+    """
+    try:
+        results = framework_collection.query(
+            query_texts=[query],
+            n_results=n_results,
+            where={"framework": framework_name, "is_factsheet": False},
+        )
+        docs = results.get("documents", [[]])[0]
+        return [d for d in docs if isinstance(d, str)]
+    except Exception:
+        return []
 
 
 # -----------------------------------------
-# Tools (Agents SDK) -> wrap the normal functions
+# Tools (Agents SDK)
 # -----------------------------------------
 @function_tool
 def search_bosch_use_cases(query: str, n_results: int = 3) -> Dict[str, Any]:
@@ -178,6 +209,167 @@ def search_bosch_use_cases(query: str, n_results: int = 3) -> Dict[str, Any]:
 def search_framework_docs(query: str, n_results: int = 3) -> Dict[str, Any]:
     """Search in framework docs stored in ChromaDB."""
     return _query_framework_docs(query=query, n_results=n_results)
+
+
+# -----------------------------------------
+# Deterministic scoring (Bewertungsmatrix)
+# - Ranking/Prozentwerte werden hier im Backend berechnet
+# - LLM erklärt nur Pro/Contra/Empfehlung
+# -----------------------------------------
+PRIORITY_WEIGHTS_BY_KEY: Dict[str, Dict[str, float]] = {
+    "speed": {"D1": 2.5, "D2": 0.75, "D3": 0.75, "D4": 0.75, "D5": 0.75, "D6": 1.5},
+    "tools": {"D1": 0.75, "D2": 2.5, "D3": 0.75, "D4": 0.75, "D5": 1.5, "D6": 0.75},
+    "memory": {"D1": 0.75, "D2": 0.75, "D3": 2.0, "D4": 1.0, "D5": 0.75, "D6": 0.75},
+    "rag": {"D1": 0.75, "D2": 0.75, "D3": 2.2, "D4": 1.0, "D5": 0.75, "D6": 0.75},
+    "multi": {"D1": 0.8, "D2": 1.0, "D3": 1.0, "D4": 2.2, "D5": 1.2, "D6": 1.0},
+    "privacy": {d: 1.0 for d in DIMS},
+}
+
+AGENT_TYPE_MULTIPLIERS: Dict[str, Dict[str, float]] = {
+    "Workflow-Agent": {"D1": 1.2, "D2": 1.3, "D3": 1.0, "D4": 0.7, "D5": 0.8, "D6": 1.0},
+    "Multi-Agent-System": {"D1": 0.8, "D2": 1.0, "D3": 1.0, "D4": 1.4, "D5": 1.2, "D6": 1.0},
+    "Daten-Agent": {"D1": 1.0, "D2": 1.1, "D3": 1.4, "D4": 1.0, "D5": 1.0, "D6": 1.0},
+    "Analyse-Agent": {"D1": 1.0, "D2": 1.0, "D3": 1.2, "D4": 1.0, "D5": 1.3, "D6": 1.0},
+    "Chatbot": {"D1": 1.2, "D2": 1.0, "D3": 1.0, "D4": 1.0, "D5": 1.0, "D6": 1.1},
+    "unknown": {d: 1.0 for d in DIMS},
+}
+
+SKILL_MULTIPLIERS: Dict[str, Dict[str, float]] = {
+    "beginner": {"D1": 1.2, "D2": 1.0, "D3": 1.0, "D4": 1.0, "D5": 0.8, "D6": 1.4},
+    "intermediate": {d: 1.0 for d in DIMS},
+    "expert": {"D1": 1.0, "D2": 1.0, "D3": 1.0, "D4": 1.2, "D5": 1.4, "D6": 0.8},
+}
+
+
+def _avg_weights(priorities: List[str]) -> Dict[str, float]:
+    if not priorities:
+        return {d: 1.0 for d in DIMS}
+    vecs = [PRIORITY_WEIGHTS_BY_KEY.get(p, {d: 1.0 for d in DIMS}) for p in priorities]
+    out = {d: 0.0 for d in DIMS}
+    for v in vecs:
+        for d in DIMS:
+            out[d] += float(v.get(d, 1.0))
+    n = float(len(vecs))
+    return {d: out[d] / n for d in DIMS}
+
+
+def _get_agent_mult(agent_type: str) -> Dict[str, float]:
+    return AGENT_TYPE_MULTIPLIERS.get(agent_type, {d: 1.0 for d in DIMS})
+
+
+def _get_skill_mult(skill_level: Optional[str]) -> Dict[str, float]:
+    if not skill_level:
+        return {d: 1.0 for d in DIMS}
+    return SKILL_MULTIPLIERS.get(skill_level, {d: 1.0 for d in DIMS})
+
+
+def _load_framework_factsheets_from_chroma() -> List[Dict[str, Any]]:
+    """
+    Lädt ALLE Framework-Factsheets aus der Collection framework_docs.
+    Voraussetzung: ingest_framework_docs.py hat Factsheets mit:
+      - is_factsheet=True
+      - framework=<name>
+      - D1..D6 als flache Metadaten
+    """
+    try:
+        got = framework_collection.get(
+            where={"is_factsheet": True},
+            include=["metadatas", "documents"],
+        )
+        metas = got.get("metadatas", []) or []
+        docs = got.get("documents", []) or []
+
+        out: List[Dict[str, Any]] = []
+        for i in range(len(metas)):
+            meta = metas[i] if isinstance(metas[i], dict) else {}
+            fw = str(meta.get("framework") or "").strip()
+            if not fw:
+                continue
+
+            dims = {d: int(meta.get(d, 3)) for d in DIMS}
+            # Simple description: bevorzugt aus Factsheet-doc, sonst leer
+            desc = ""
+            if i < len(docs) and isinstance(docs[i], str):
+                desc = docs[i]
+
+            out.append({
+                "framework": fw,
+                "dims": dims,
+                "factsheet_text": desc,
+                "url": meta.get("url"),
+            })
+
+        # Dedupe by framework (falls du mehrfach ingestest)
+        dedup: Dict[str, Dict[str, Any]] = {}
+        for item in out:
+            dedup[item["framework"]] = item
+        return list(dedup.values())
+    except Exception as e:
+        _debug_print("Factsheets load failed", str(e))
+        return []
+
+
+def _score_framework_dims(
+    dims: Dict[str, int],
+    weights: Dict[str, float],
+    agent_mult: Dict[str, float],
+    skill_mult: Dict[str, float],
+) -> Tuple[float, Dict[str, float]]:
+    per_dim: Dict[str, float] = {}
+    total = 0.0
+    for d in DIMS:
+        base = float(dims.get(d, 0))
+        contrib = base * weights[d] * agent_mult[d] * skill_mult[d]
+        per_dim[d] = contrib
+        total += contrib
+    return total, per_dim
+
+
+def _rank_all_frameworks(req: AgentRequest) -> List[Dict[str, Any]]:
+    """
+    Deterministisches Ranking über ALLE Frameworks (Factsheets aus Chroma).
+    Gibt sortierte Liste zurück, inkl. match_percent & score(0..1) für UI.
+    """
+    facts = _load_framework_factsheets_from_chroma()
+    if not facts:
+        return []
+
+    weights = _avg_weights(req.priorities or [])
+    a_mult = _get_agent_mult(req.agent_type or "unknown")
+    s_mult = _get_skill_mult(req.experience_level)
+
+    scored: List[Tuple[Dict[str, Any], float, Dict[str, float]]] = []
+    for fw in facts:
+        total, per_dim = _score_framework_dims(fw["dims"], weights, a_mult, s_mult)
+        scored.append((fw, total, per_dim))
+
+    scored.sort(key=lambda x: x[1], reverse=True)
+    best = scored[0][1] if scored else 1.0
+    if best <= 0:
+        best = 1.0
+
+    out: List[Dict[str, Any]] = []
+    for fw, total, per_dim in scored:
+        match_percent = int(round((total / best) * 100))
+        match_percent = max(0, min(100, match_percent))
+
+        out.append({
+            "framework": fw["framework"],
+            "dims": fw["dims"],
+            "url": fw.get("url"),
+            "score_total": total,
+            "match_percent": match_percent,
+            "score": float(match_percent) / 100.0,  # UI erwartet 0..1
+            "score_breakdown": {
+                "per_dim": per_dim,
+                "raw_dim_scores": fw["dims"],
+                "weights": weights,
+                "agent_type_multipliers": a_mult,
+                "skill_multipliers": s_mult,
+            },
+        })
+
+    return out
 
 
 # -----------------------------------------
@@ -229,32 +421,28 @@ UseCaseAnalyzerAgent = Agent(
     tools=[search_bosch_use_cases],
 )
 
-FrameworkAnalyzerAgent = Agent(
-    name="FrameworkAnalyzer",
-    instructions=(
-        "Du bist der Framework-Analyzer.\n"
-        "Nutze search_framework_docs, um relevante Framework-Passagen zu holen.\n"
-        "Leite daraus 2-4 Framework-Kandidaten ab und gib NUR JSON zurück:\n"
-        "{\n"
-        '  "framework_candidates": [{"framework":"...","fit_reason":"..."}]\n'
-        "}\n"
-    ),
-    tools=[search_framework_docs],
-)
-
 DecisionAgent = Agent(
     name="DecisionAgent",
     instructions=(
         "Du bist der Decision Agent.\n"
-        "Input enthält requirements_summary, profiler, use_cases(use_cases + suggest_show_frameworks), framework_candidates.\n"
-        "POLICY: Wenn suggest_show_frameworks=false -> mode='agents' und agent_recommendations aus use_cases ableiten.\n"
-        "Wenn suggest_show_frameworks=true -> mode='frameworks' und framework_recommendations erstellen.\n"
-        "Gib NUR JSON zurück im Format:\n"
+        "WICHTIG (Hard Rules):\n"
+        "- Du entscheidest NICHT über das Ranking/Order.\n"
+        "- Du ermittelst KEINE Prozentwerte und rechnest nichts.\n"
+        "- Du formulierst NUR Pro/Contra & Empfehlungstexte.\n"
+        "- Du beziehst dich auf Use-Case & Persona.\n\n"
+        "Input enthält:\n"
+        "- persona (persona_name, communication_style, tone_guidelines)\n"
+        "- requirements_summary\n"
+        "- use_case_text\n"
+        "- frameworks: Liste von Framework-Objekten in finaler Reihenfolge (nicht ändern)\n"
+        "Gib NUR JSON zurück:\n"
         "{\n"
-        '  "mode": "agents" | "frameworks",\n'
-        '  "agent_recommendations": [{"title":"...","summary":"...","score":0.0}],\n'
-        '  "framework_recommendations": [{"framework":"...","score":0.0,"description":"...","match_reason":"..."}]\n'
+        '  "framework_texts":[\n'
+        '     {"framework":"...","description":"...","match_reason":"...","pros":["..."],"cons":["..."],"recommendation":"..."}\n'
+        "  ]\n"
         "}\n"
+        "framework_texts MUSS gleiche Reihenfolge & Namen wie input.frameworks haben.\n"
+        "Antwort NUR als JSON."
     ),
 )
 
@@ -262,7 +450,7 @@ ControlAgent = Agent(
     name="ControlAgent",
     instructions=(
         "Du bist der Kontrollagent.\n"
-        "Prüfe, ob die Antwort valides JSON ist und die Felder mode/agent_recommendations/framework_recommendations existieren.\n"
+        "Prüfe, ob die Antwort valides JSON ist und erwartete Felder existieren.\n"
         "Wenn etwas fehlt oder ungültig ist, korrigiere minimal.\n"
         "Antwort NUR als JSON."
     ),
@@ -272,7 +460,7 @@ AdvisorAgent = Agent(
     name="AdvisorAgent",
     instructions=(
         "Du bist der Berater-Agent.\n"
-        "Du erhältst das validierte JSON vom ControlAgent.\n"
+        "Du erhältst das validierte JSON.\n"
         "Gib es 1:1 als JSON zurück (keine Umformatierung, kein Extra-Text).\n"
         "Antwort NUR als JSON."
     ),
@@ -291,11 +479,9 @@ def health():
 def use_cases(req: AgentRequest):
     """
     Direkt-Endpoint für UI: zeigt Bosch Use Cases (Agenten) zuerst.
-    IMPORTANT: Uses direct python Chroma query (NOT the FunctionTool wrapper).
     """
     try:
         query = _build_query(req)
-
         res = _query_bosch_use_cases(query=query, n_results=3)
         use_cases_list = res.get("use_cases", [])
 
@@ -316,28 +502,13 @@ def use_cases(req: AgentRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/frameworks")
-def frameworks(req: AgentRequest):
-    """
-    Optional: direkter Endpoint für Framework-Infos.
-    Nutzt FrameworkAnalyzerAgent (LLM + Chroma docs).
-    """
-    try:
-        query = _build_query(req)
-        fw_query = f"Framework-Auswahl für:\n{query}"
-
-        r = Runner.run_sync(FrameworkAnalyzerAgent, [{"role": "user", "content": fw_query}])
-        obj = _extract_json(r.final_output or "")
-        return obj or {"framework_candidates": []}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
 @app.post("/agent", response_model=AgentResponse)
 def run_agent(req: AgentRequest):
     """
-    Multi-Agent Orchestrierung über OpenAI Agents SDK.
-    Liefert JSON als string in `answer`.
+    Orchestrierung:
+      - Agents/UseCases: via Chroma similarity
+      - Frameworks: deterministisch via Bewertungsmatrix über ALLE Frameworks (Factsheets in Chroma)
+      - LLM: nur Pro/Contra/Empfehlungstexte (Hard Rules)
     """
     try:
         _debug_print("Request /agent", req.dict())
@@ -363,7 +534,7 @@ def run_agent(req: AgentRequest):
         profiler = _extract_json(r2.final_output or "")
         _debug_print("ProfilerAgent", profiler)
 
-        # 3) UseCaseAnalyzer (LLM + tool)
+        # 3) UseCaseAnalyzer (LLM + tool) -> Bosch Use Cases
         query = requirements.get("requirements_summary") or _build_query(req)
         r3 = Runner.run_sync(
             UseCaseAnalyzerAgent,
@@ -372,59 +543,117 @@ def run_agent(req: AgentRequest):
         use_case_result = _extract_json(r3.final_output or "")
         _debug_print("UseCaseAnalyzer", use_case_result)
 
-        # 4) FrameworkAnalyzer (LLM + tool)
-        fw_query = (
-            f"Framework-Auswahl für Use Case:\n{query}\n"
-            f"Prioritäten: {', '.join(req.priorities) if req.priorities else 'keine'}\n"
-            f"Agententyp: {req.agent_type}"
-        )
-        r4 = Runner.run_sync(
-            FrameworkAnalyzerAgent,
-            [{"role": "user", "content": fw_query}],
-        )
-        framework_candidates = _extract_json(r4.final_output or "")
-        _debug_print("FrameworkAnalyzer", framework_candidates)
+        suggest = use_case_result.get("suggest_show_frameworks") if isinstance(use_case_result, dict) else True
+        want_frameworks = bool(req.force_frameworks) or bool(suggest)
 
-        # 5) Decision
-        decision_payload = {
-            "requirements_summary": requirements.get("requirements_summary", ""),
-            "profiler": profiler,
-            "use_cases": use_case_result,
-            "framework_candidates": framework_candidates,
-        }
+        # 4) Framework ranking deterministisch über ALLE Frameworks
+        ranked = _rank_all_frameworks(req)
+        _debug_print("Ranked frameworks count", len(ranked))
+
+        # Wenn keine Factsheets existieren -> leere Liste (dein Ingest muss laufen)
+        top3 = ranked[:3] if ranked else []
+
+        if want_frameworks:
+            # 5) RAG Snippets pro Top-Framework (optional, für bessere Texte)
+            #    (LLM darf daraus nur Texte machen, nicht scoren)
+            frameworks_for_llm: List[Dict[str, Any]] = []
+            for fw in top3:
+                name = fw["framework"]
+                snippets = _get_framework_snippets_for_framework(name, query=req.use_case, n_results=2)
+                frameworks_for_llm.append({
+                    "framework": name,
+                    "snippets": snippets,
+                    "url": fw.get("url"),
+                    "priorities": req.priorities,
+                    "agent_type": req.agent_type,
+                    "experience_level": req.experience_level,
+                    "learning_preference": req.learning_preference,
+                })
+
+            decision_payload = {
+                "persona": profiler,
+                "requirements_summary": requirements.get("requirements_summary", ""),
+                "use_case_text": req.use_case,
+                "frameworks": frameworks_for_llm,  # Reihenfolge ist final, LLM darf NICHT umsortieren
+            }
+
+            r4 = Runner.run_sync(
+                DecisionAgent,
+                [{"role": "user", "content": json.dumps(decision_payload, ensure_ascii=False)}],
+            )
+            decision_texts = _extract_json(r4.final_output or "")
+            _debug_print("DecisionAgent(Texts)", decision_texts)
+
+            # Merge LLM texts into deterministic ranking output
+            texts_by_name: Dict[str, Dict[str, Any]] = {}
+            if isinstance(decision_texts, dict) and isinstance(decision_texts.get("framework_texts"), list):
+                for item in decision_texts["framework_texts"]:
+                    if isinstance(item, dict) and item.get("framework"):
+                        texts_by_name[str(item["framework"])] = item
+
+            framework_recs: List[Dict[str, Any]] = []
+            for fw in top3:
+                name = fw["framework"]
+                t = texts_by_name.get(name, {})
+                framework_recs.append({
+                    "framework": name,
+                    "score": fw["score"],  # 0..1 für UI
+                    "description": t.get("description", ""),
+                    "match_reason": t.get("match_reason", ""),
+                    "pros": t.get("pros", []),
+                    "cons": t.get("cons", []),
+                    "recommendation": t.get("recommendation", ""),
+                    # optional extra Debug/Trace
+                    "match_percent": fw.get("match_percent"),
+                    "score_breakdown": fw.get("score_breakdown"),
+                    "url": fw.get("url"),
+                })
+
+            final_obj = {
+                "mode": "frameworks",
+                "agent_recommendations": [],
+                "framework_recommendations": framework_recs,
+            }
+        else:
+            # Agents mode: Use Cases direkt (Ranking kommt aus similarity score)
+            use_cases_list = []
+            if isinstance(use_case_result, dict) and isinstance(use_case_result.get("use_cases"), list):
+                use_cases_list = use_case_result["use_cases"]
+
+            agent_recs = []
+            for uc in use_cases_list[:3]:
+                if isinstance(uc, dict):
+                    agent_recs.append({
+                        "title": uc.get("title", "Bosch Use Case"),
+                        "summary": uc.get("summary", ""),
+                        "score": uc.get("score", 0.0),
+                    })
+
+            final_obj = {
+                "mode": "agents",
+                "agent_recommendations": agent_recs,
+                "framework_recommendations": [],
+            }
+
+        # Control -> ensure JSON shape
         r5 = Runner.run_sync(
-            DecisionAgent,
-            [{"role": "user", "content": json.dumps(decision_payload, ensure_ascii=False)}],
-        )
-        decision = _extract_json(r5.final_output or "")
-        _debug_print("DecisionAgent", decision)
-
-        # 6) Control
-        r6 = Runner.run_sync(
             ControlAgent,
-            [{"role": "user", "content": json.dumps(decision, ensure_ascii=False)}],
+            [{"role": "user", "content": json.dumps(final_obj, ensure_ascii=False)}],
         )
-        controlled = _extract_json(r6.final_output or "")
+        controlled = _extract_json(r5.final_output or "")
         controlled = _ensure_final_shape(controlled)
         _debug_print("ControlAgent", controlled)
 
-        # Extra safety: server-side policy, falls LLM Mist baut
-        suggest = use_case_result.get("suggest_show_frameworks") if isinstance(use_case_result, dict) else None
-        if suggest is False and controlled.get("mode") != "agents":
-            controlled["mode"] = "agents"
-        if suggest is True and controlled.get("mode") != "frameworks":
-            controlled["mode"] = "frameworks"
-
-        # 7) Advisor (final JSON)
-        r7 = Runner.run_sync(
+        # Advisor -> final
+        r6 = Runner.run_sync(
             AdvisorAgent,
             [{"role": "user", "content": json.dumps(controlled, ensure_ascii=False)}],
         )
-        final_obj = _extract_json(r7.final_output or "")
-        final_obj = _ensure_final_shape(final_obj)
-        _debug_print("Final", final_obj)
+        out = _extract_json(r6.final_output or "")
+        out = _ensure_final_shape(out)
+        _debug_print("Final", out)
 
-        return AgentResponse(answer=json.dumps(final_obj, ensure_ascii=False))
+        return AgentResponse(answer=json.dumps(out, ensure_ascii=False))
 
     except Exception as e:
         error_obj = _ensure_final_shape({
