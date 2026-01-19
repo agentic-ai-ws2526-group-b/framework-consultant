@@ -1,300 +1,436 @@
 import os
 import json
-from typing import List, Optional, Dict, Any
+import re
+from typing import Any, Dict, List, Optional
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-
 from dotenv import load_dotenv
-import chromadb
-from openai import OpenAI
 
-# ---------------------------
-# Setup / ENV
-# ---------------------------
+import chromadb
+
+# OpenAI Agents SDK
+from agents import Agent, Runner
+from agents.tool import function_tool
+
+
+# -----------------------------------------
+# ENV
+# -----------------------------------------
 load_dotenv()
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 CHROMA_PATH = os.getenv("CHROMA_PATH", "./chroma_db")
 
-# Collections
-FRAMEWORK_DOCS_COLLECTION = os.getenv("FRAMEWORK_DOCS_COLLECTION", "framework_docs")
-BOSCH_USE_CASES_COLLECTION = os.getenv("BOSCH_USE_CASES_COLLECTION", "bosch_use_cases")
-
 if not OPENAI_API_KEY:
     raise RuntimeError("OPENAI_API_KEY fehlt in .env")
 
-client = OpenAI(api_key=OPENAI_API_KEY)
 
+# -----------------------------------------
+# Chroma
+# -----------------------------------------
 chroma_client = chromadb.PersistentClient(path=CHROMA_PATH)
+usecase_collection = chroma_client.get_or_create_collection("bosch_use_cases")
+framework_collection = chroma_client.get_or_create_collection("framework_docs")
 
-framework_collection = chroma_client.get_or_create_collection(FRAMEWORK_DOCS_COLLECTION)
-bosch_usecase_collection = chroma_client.get_or_create_collection(BOSCH_USE_CASES_COLLECTION)
 
+# -----------------------------------------
+# FastAPI
+# -----------------------------------------
 app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],   # ok für lokalen Dev; später restriktiver machen
+    allow_origins=["*"],  # DEV ok; in PROD einschränken
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ---------------------------
+
+# -----------------------------------------
 # Models
-# ---------------------------
+# -----------------------------------------
 class AgentRequest(BaseModel):
-    agent_type: str = Field(..., description="z.B. Chatbot, Daten-Agent, Workflow-Agent ...")
-    priorities: List[str] = Field(default_factory=list, description="z.B. speed, privacy, tools, rag ...")
-    use_case: str = Field(..., description="Freitext Use Case")
-
-    # Neue UI-Felder:
-    experience_level: Optional[str] = Field(default=None, description="beginner|intermediate|expert")
-    learning_preference: Optional[str] = Field(default=None, description="learn|simple")
-
-
-class UseCaseCard(BaseModel):
-    title: str
-    summary: str
-    score: float
-    # Optional: Metadaten, falls du sie später anzeigen willst
-    metadata: Optional[Dict[str, Any]] = None
-
-
-class UseCaseResponse(BaseModel):
-    use_cases: List[UseCaseCard]
-    # UI-Hinweis: wenn keine passenden Use Cases existieren, kann UI direkt Framework-Screen zeigen
-    suggest_show_frameworks: bool = False
+    agent_type: str
+    priorities: List[str] = Field(default_factory=list)
+    use_case: str
+    experience_level: Optional[str] = None
+    learning_preference: Optional[str] = None
 
 
 class AgentResponse(BaseModel):
-    answer: str  # JSON string, so wie du es im Frontend parse-st
+    # JSON string, damit dein Frontend wie bisher JSON.parse(data.answer) machen kann
+    answer: str
 
 
-# ---------------------------
-# Helpers
-# ---------------------------
-def _safe_first(lst, default=None):
-    return lst[0] if lst and len(lst) > 0 else default
-
-
-def retrieve_context_from_framework_docs(query: str, n_results: int = 5) -> str:
-    results = framework_collection.query(query_texts=[query], n_results=n_results)
-    docs = _safe_first(results.get("documents", [[]]), [])
-    if not docs:
-        return "Keine relevanten Framework-Dokumente gefunden."
-    return "\n\n---\n\n".join(docs)
-
-
-def retrieve_bosch_use_cases(query: str, n_results: int = 5):
-    """
-    Holt die besten Matches aus der Bosch-Use-Case-Collection.
-    Chroma liefert distances: je kleiner, desto ähnlicher.
-    """
-    results = bosch_usecase_collection.query(query_texts=[query], n_results=n_results)
-
-    docs = _safe_first(results.get("documents", [[]]), [])
-    metadatas = _safe_first(results.get("metadatas", [[]]), [])
-    distances = _safe_first(results.get("distances", [[]]), [])
-
-    return docs, metadatas, distances
-
-
-def distance_to_score(distance: float) -> float:
-    """
-    Simple Mapping: distance (0..?) -> score (0..1).
-    Je nachdem wie deine Embeddings/DB skaliert ist, kann man das später tunen.
-    """
+# -----------------------------------------
+# Helper: Scoring + JSON parsing
+# -----------------------------------------
+def _distance_to_score(distance: Optional[float]) -> Optional[float]:
+    """Heuristik distance -> similarity score in [0, 1]."""
     if distance is None:
-        return 0.0
-    # konservatives Mapping: ab distance 1.0 deutlich schlechter
-    score = 1.0 / (1.0 + float(distance))
-    # clamp
-    if score < 0.0:
-        return 0.0
-    if score > 1.0:
-        return 1.0
-    return score
-
-
-def requirements_agent(req: AgentRequest) -> Dict[str, Any]:
-    """
-    Minimaler Requirements-Agent: fasst Anforderungen zusammen.
-    (Du hast bereits Debug-Ausgaben in deiner Konsole – ich halte es bewusst simpel/stabil.)
-    """
-    priorities_text = ", ".join(req.priorities) if req.priorities else "keine besonderen"
-    exp = req.experience_level or "unknown"
-    learn = req.learning_preference or "unknown"
-
-    requirements_summary = (
-        f"Use Case: {req.use_case}. "
-        f"Agententyp: {req.agent_type}. "
-        f"Prioritäten: {priorities_text}. "
-        f"Erfahrung: {exp}. "
-        f"Präferenz: {learn}."
-    )
-
-    return {
-        "requirements_summary": requirements_summary,
-        "agent_role": f"{req.agent_type} für: {req.use_case}",
-        "tasks": req.priorities,
-    }
-
-
-def decision_framework_agent(req: AgentRequest, context: str) -> Dict[str, Any]:
-    """
-    LLM erzeugt Top-3 Framework-Recommendations als JSON.
-    """
-    priorities_text = ", ".join(req.priorities) if req.priorities else "keine"
-    exp = req.experience_level or "unknown"
-    learn = req.learning_preference or "unknown"
-
-    prompt = f"""
-Du bist ein KI-Framework-Consultant.
-
-Gegeben sind:
-- Agententyp: {req.agent_type}
-- Use Case: {req.use_case}
-- Prioritäten: {priorities_text}
-- Erfahrung: {exp}
-- Lernpräferenz: {learn}
-
-Nutze den Kontext (Dokumentation/Infos) unten.
-Erstelle die TOP 3 Framework-Empfehlungen als streng gültiges JSON im Format:
-
-{{
-  "recommendations": [
-    {{
-      "framework": "string",
-      "score": 0.0,
-      "description": "string",
-      "match_reason": "string"
-    }}
-  ]
-}}
-
-Wichtige Regeln:
-- Antworte NUR mit JSON (kein Markdown).
-- score ist 0.0 bis 1.0
-- Beschreibung kurz, konkret, auf den Use Case bezogen.
-
-KONTEXT:
-{context}
-""".strip()
-
-    completion = client.chat.completions.create(
-        model=os.getenv("OPENAI_MODEL", "gpt-4.1"),
-        messages=[
-            {"role": "system", "content": "Du bist ein Experte für Agenten-Frameworks und triffst nachvollziehbare Empfehlungen."},
-            {"role": "user", "content": prompt},
-        ],
-        temperature=0.2,
-    )
-
-    raw_text = completion.choices[0].message.content.strip()
-
-    # Robust gegen ```json ... ```
-    if raw_text.startswith("```"):
-        raw_text = raw_text.strip("`")
-        raw_text = raw_text.replace("json", "", 1).strip()
-
-    # Validieren
+        return None
     try:
-        parsed = json.loads(raw_text)
-        if "recommendations" not in parsed:
-            raise ValueError("JSON enthält kein recommendations-Feld")
-        return parsed
+        d = float(distance)
+        s = 1.0 / (1.0 + d)
+        return max(0.0, min(1.0, s))
     except Exception:
-        return {"recommendations": []}
+        return None
 
 
-# ---------------------------
-# Routes
-# ---------------------------
+def _extract_json(text: str) -> Dict[str, Any]:
+    """Robust: extrahiert JSON aus Modell-Output."""
+    if not text:
+        return {}
+    t = text.strip()
+
+    # Codefence
+    if t.startswith("```"):
+        parts = t.split("```")
+        if len(parts) >= 2:
+            candidate = parts[1].strip()
+            if candidate.lower().startswith("json"):
+                candidate = candidate[4:].strip()
+            try:
+                return json.loads(candidate)
+            except Exception:
+                pass
+
+    # Fallback: ersten JSON-Block suchen
+    m = re.search(r"\{.*\}", t, flags=re.DOTALL)
+    if m:
+        try:
+            return json.loads(m.group(0))
+        except Exception:
+            return {}
+
+    return {}
+
+
+def _ensure_final_shape(obj: Dict[str, Any]) -> Dict[str, Any]:
+    obj = obj or {}
+    if obj.get("mode") not in ("agents", "frameworks"):
+        obj["mode"] = "frameworks"
+    obj.setdefault("agent_recommendations", [])
+    obj.setdefault("framework_recommendations", [])
+    return obj
+
+
+def _build_query(req: AgentRequest) -> str:
+    return (
+        f"Use Case: {req.use_case}\n"
+        f"Agententyp: {req.agent_type}\n"
+        f"Prioritäten: {', '.join(req.priorities) if req.priorities else 'keine'}\n"
+        f"Experience Level: {req.experience_level or 'unknown'}\n"
+        f"Learning Preference: {req.learning_preference or 'unknown'}"
+    )
+
+
+def _debug_print(title: str, payload: Any) -> None:
+    print(f">>> {title}: {payload}")
+
+
+# -----------------------------------------
+# IMPORTANT FIX:
+# Normal python functions for Chroma queries
+# (so /use-cases can call them directly)
+# -----------------------------------------
+def _query_bosch_use_cases(query: str, n_results: int = 3) -> Dict[str, Any]:
+    results = usecase_collection.query(query_texts=[query], n_results=n_results)
+    docs = results.get("documents", [[]])[0]
+    metas = results.get("metadatas", [[]])[0]
+    dists = results.get("distances", [[]])[0]
+
+    out: List[Dict[str, Any]] = []
+    for i in range(len(docs)):
+        meta = metas[i] if metas and i < len(metas) else {}
+        dist = float(dists[i]) if dists and i < len(dists) and dists[i] is not None else None
+        out.append(
+            {
+                "title": (meta.get("title") if isinstance(meta, dict) else None) or "Bosch Use Case",
+                "summary": docs[i],
+                "distance": dist,
+                "score": _distance_to_score(dist),
+                "metadata": meta if isinstance(meta, dict) else {},
+            }
+        )
+    return {"use_cases": out}
+
+
+def _query_framework_docs(query: str, n_results: int = 3) -> Dict[str, Any]:
+    results = framework_collection.query(query_texts=[query], n_results=n_results)
+    docs = results.get("documents", [[]])[0]
+    return {"docs": docs}
+
+
+# -----------------------------------------
+# Tools (Agents SDK) -> wrap the normal functions
+# -----------------------------------------
+@function_tool
+def search_bosch_use_cases(query: str, n_results: int = 3) -> Dict[str, Any]:
+    """Search in Bosch use cases stored in ChromaDB."""
+    return _query_bosch_use_cases(query=query, n_results=n_results)
+
+
+@function_tool
+def search_framework_docs(query: str, n_results: int = 3) -> Dict[str, Any]:
+    """Search in framework docs stored in ChromaDB."""
+    return _query_framework_docs(query=query, n_results=n_results)
+
+
+# -----------------------------------------
+# Agents (Agents SDK)
+# -----------------------------------------
+RequirementsAgent = Agent(
+    name="RequirementsAgent",
+    instructions=(
+        "Du bist der Anforderungsagent. "
+        "Du bekommst Nutzereingaben (agent_type, priorities, use_case, experience_level, learning_preference). "
+        "Gib ein JSON zurück mit:\n"
+        "{\n"
+        '  "requirements_summary": "string",\n'
+        '  "agent_role": "string",\n'
+        '  "tasks": ["string", ...]\n'
+        "}\n"
+        "Antwort NUR als JSON."
+    ),
+)
+
+ProfilerAgent = Agent(
+    name="ProfilerAgent",
+    instructions=(
+        "Du bist der Profiler-Agent. "
+        "Du erhältst requirements_summary + user attributes. "
+        "Gib ein JSON zurück mit:\n"
+        "{\n"
+        '  "persona_name": "string",\n'
+        '  "communication_style": "string",\n'
+        '  "tone_guidelines": ["string", ...]\n'
+        "}\n"
+        "Antwort NUR als JSON."
+    ),
+)
+
+UseCaseAnalyzerAgent = Agent(
+    name="UseCaseAnalyzer",
+    instructions=(
+        "Du bist der Use-Case Analyzer.\n"
+        "Nutze search_bosch_use_cases, um passende Bosch Use Cases zu finden.\n"
+        "Gib NUR JSON zurück:\n"
+        "{\n"
+        '  "use_cases": [{"title":"...","summary":"...","score":0.0,"metadata":{}}],\n'
+        '  "suggest_show_frameworks": boolean,\n'
+        '  "reason": "string"\n'
+        "}\n"
+        "Regel: suggest_show_frameworks=true, wenn es keine Use Cases gibt oder der beste Score < 0.35."
+    ),
+    tools=[search_bosch_use_cases],
+)
+
+FrameworkAnalyzerAgent = Agent(
+    name="FrameworkAnalyzer",
+    instructions=(
+        "Du bist der Framework-Analyzer.\n"
+        "Nutze search_framework_docs, um relevante Framework-Passagen zu holen.\n"
+        "Leite daraus 2-4 Framework-Kandidaten ab und gib NUR JSON zurück:\n"
+        "{\n"
+        '  "framework_candidates": [{"framework":"...","fit_reason":"..."}]\n'
+        "}\n"
+    ),
+    tools=[search_framework_docs],
+)
+
+DecisionAgent = Agent(
+    name="DecisionAgent",
+    instructions=(
+        "Du bist der Decision Agent.\n"
+        "Input enthält requirements_summary, profiler, use_cases(use_cases + suggest_show_frameworks), framework_candidates.\n"
+        "POLICY: Wenn suggest_show_frameworks=false -> mode='agents' und agent_recommendations aus use_cases ableiten.\n"
+        "Wenn suggest_show_frameworks=true -> mode='frameworks' und framework_recommendations erstellen.\n"
+        "Gib NUR JSON zurück im Format:\n"
+        "{\n"
+        '  "mode": "agents" | "frameworks",\n'
+        '  "agent_recommendations": [{"title":"...","summary":"...","score":0.0}],\n'
+        '  "framework_recommendations": [{"framework":"...","score":0.0,"description":"...","match_reason":"..."}]\n'
+        "}\n"
+    ),
+)
+
+ControlAgent = Agent(
+    name="ControlAgent",
+    instructions=(
+        "Du bist der Kontrollagent.\n"
+        "Prüfe, ob die Antwort valides JSON ist und die Felder mode/agent_recommendations/framework_recommendations existieren.\n"
+        "Wenn etwas fehlt oder ungültig ist, korrigiere minimal.\n"
+        "Antwort NUR als JSON."
+    ),
+)
+
+AdvisorAgent = Agent(
+    name="AdvisorAgent",
+    instructions=(
+        "Du bist der Berater-Agent.\n"
+        "Du erhältst das validierte JSON vom ControlAgent.\n"
+        "Gib es 1:1 als JSON zurück (keine Umformatierung, kein Extra-Text).\n"
+        "Antwort NUR als JSON."
+    ),
+)
+
+
+# -----------------------------------------
+# Endpoints
+# -----------------------------------------
 @app.get("/health")
 def health():
-    return {
-        "status": "ok",
-        "chroma_path": CHROMA_PATH,
-        "framework_collection": FRAMEWORK_DOCS_COLLECTION,
-        "bosch_use_cases_collection": BOSCH_USE_CASES_COLLECTION,
-    }
+    return {"status": "ok"}
 
 
-@app.post("/use-cases", response_model=UseCaseResponse)
-def get_use_cases(req: AgentRequest):
+@app.post("/use-cases")
+def use_cases(req: AgentRequest):
     """
-    Bildschirm 4 (erster Teil):
-    - Prüfe in Bosch Use Cases, ob es bereits passende Agenten/Use-Cases gibt.
-    - Liefere Top-3 Use Cases zurück.
+    Direkt-Endpoint für UI: zeigt Bosch Use Cases (Agenten) zuerst.
+    IMPORTANT: Uses direct python Chroma query (NOT the FunctionTool wrapper).
     """
-    print(f">>> Request /use-cases: {req.model_dump()}")
+    try:
+        query = _build_query(req)
 
-    req_summary = requirements_agent(req)
-    print(f">>> Requirements summary: {req_summary['requirements_summary']}")
+        res = _query_bosch_use_cases(query=query, n_results=3)
+        use_cases_list = res.get("use_cases", [])
 
-    query = req_summary["requirements_summary"]
-    docs, metadatas, distances = retrieve_bosch_use_cases(query, n_results=5)
+        best_score = None
+        if use_cases_list and isinstance(use_cases_list[0], dict):
+            best_score = use_cases_list[0].get("score")
 
-    use_cases: List[UseCaseCard] = []
+        suggest_show_frameworks = True
+        if best_score is not None and best_score >= 0.35:
+            suggest_show_frameworks = False
 
-    for i, doc in enumerate(docs):
-        md = metadatas[i] if i < len(metadatas) else {}
-        dist = distances[i] if i < len(distances) else None
+        return {
+            "use_cases": use_cases_list,
+            "suggest_show_frameworks": suggest_show_frameworks,
+            "best_score": best_score,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
-        # Erwartung: dein Ingest speichert Titel/Summary entweder im Metadata oder im Document.
-        # Wir unterstützen beides.
-        title = (md.get("title") if isinstance(md, dict) else None) or "Bosch Use Case"
-        summary = (md.get("summary") if isinstance(md, dict) else None) or doc
 
-        use_cases.append(
-            UseCaseCard(
-                title=title,
-                summary=summary,
-                score=distance_to_score(dist),
-                metadata=md if isinstance(md, dict) else None,
-            )
-        )
+@app.post("/frameworks")
+def frameworks(req: AgentRequest):
+    """
+    Optional: direkter Endpoint für Framework-Infos.
+    Nutzt FrameworkAnalyzerAgent (LLM + Chroma docs).
+    """
+    try:
+        query = _build_query(req)
+        fw_query = f"Framework-Auswahl für:\n{query}"
 
-    # Sortiere nach score absteigend und nimm Top-3
-    use_cases = sorted(use_cases, key=lambda x: x.score, reverse=True)[:3]
-
-    # Wenn quasi nix passt, schlage direkt Frameworks vor
-    suggest_show_frameworks = len(use_cases) == 0 or (use_cases and use_cases[0].score < 0.45)
-
-    print(f">>> UseCases returned: {len(use_cases)}, suggest_show_frameworks={suggest_show_frameworks}")
-    return UseCaseResponse(use_cases=use_cases, suggest_show_frameworks=suggest_show_frameworks)
+        r = Runner.run_sync(FrameworkAnalyzerAgent, [{"role": "user", "content": fw_query}])
+        obj = _extract_json(r.final_output or "")
+        return obj or {"framework_candidates": []}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/agent", response_model=AgentResponse)
 def run_agent(req: AgentRequest):
     """
-    Framework-Empfehlungen (zweiter Teil Bildschirm 4):
-    - Nutzt framework_docs Collection als Kontext
-    - LLM erstellt Top-3 Frameworks als JSON
+    Multi-Agent Orchestrierung über OpenAI Agents SDK.
+    Liefert JSON als string in `answer`.
     """
-    print(f">>> Request /agent: {req.model_dump()}")
+    try:
+        _debug_print("Request /agent", req.dict())
 
-    # Requirements zusammenfassen
-    req_summary = requirements_agent(req)
-    print(f">>> RequirementsAgent: {req_summary}")
+        # 1) Requirements
+        r1 = Runner.run_sync(
+            RequirementsAgent,
+            [{"role": "user", "content": json.dumps(req.dict(), ensure_ascii=False)}],
+        )
+        requirements = _extract_json(r1.final_output or "")
+        _debug_print("RequirementsAgent", requirements)
 
-    # Kontext aus Framework-Docs holen
-    query = (
-        f"Framework-Auswahl für Use Case: {req_summary['requirements_summary']}\n"
-        f"Prioritäten: {', '.join(req.priorities) if req.priorities else 'keine'}\n"
-        f"Agententyp: {req.agent_type}\n"
-        f"Erfahrung: {req.experience_level or 'unknown'}\n"
-        f"Lernpräferenz: {req.learning_preference or 'unknown'}"
-    )
-    print(f">>> Query an Chroma (framework_docs): {query}")
+        # 2) Profiler
+        profiler_payload = {
+            "requirements_summary": requirements.get("requirements_summary", ""),
+            "experience_level": req.experience_level,
+            "learning_preference": req.learning_preference,
+        }
+        r2 = Runner.run_sync(
+            ProfilerAgent,
+            [{"role": "user", "content": json.dumps(profiler_payload, ensure_ascii=False)}],
+        )
+        profiler = _extract_json(r2.final_output or "")
+        _debug_print("ProfilerAgent", profiler)
 
-    context = retrieve_context_from_framework_docs(query, n_results=6)
+        # 3) UseCaseAnalyzer (LLM + tool)
+        query = requirements.get("requirements_summary") or _build_query(req)
+        r3 = Runner.run_sync(
+            UseCaseAnalyzerAgent,
+            [{"role": "user", "content": query}],
+        )
+        use_case_result = _extract_json(r3.final_output or "")
+        _debug_print("UseCaseAnalyzer", use_case_result)
 
-    # LLM Entscheidung
-    result_json = decision_framework_agent(req, context)
+        # 4) FrameworkAnalyzer (LLM + tool)
+        fw_query = (
+            f"Framework-Auswahl für Use Case:\n{query}\n"
+            f"Prioritäten: {', '.join(req.priorities) if req.priorities else 'keine'}\n"
+            f"Agententyp: {req.agent_type}"
+        )
+        r4 = Runner.run_sync(
+            FrameworkAnalyzerAgent,
+            [{"role": "user", "content": fw_query}],
+        )
+        framework_candidates = _extract_json(r4.final_output or "")
+        _debug_print("FrameworkAnalyzer", framework_candidates)
 
-    # Backend liefert IMMER JSON-String im answer-Feld
-    return AgentResponse(answer=json.dumps(result_json, ensure_ascii=False))
+        # 5) Decision
+        decision_payload = {
+            "requirements_summary": requirements.get("requirements_summary", ""),
+            "profiler": profiler,
+            "use_cases": use_case_result,
+            "framework_candidates": framework_candidates,
+        }
+        r5 = Runner.run_sync(
+            DecisionAgent,
+            [{"role": "user", "content": json.dumps(decision_payload, ensure_ascii=False)}],
+        )
+        decision = _extract_json(r5.final_output or "")
+        _debug_print("DecisionAgent", decision)
+
+        # 6) Control
+        r6 = Runner.run_sync(
+            ControlAgent,
+            [{"role": "user", "content": json.dumps(decision, ensure_ascii=False)}],
+        )
+        controlled = _extract_json(r6.final_output or "")
+        controlled = _ensure_final_shape(controlled)
+        _debug_print("ControlAgent", controlled)
+
+        # Extra safety: server-side policy, falls LLM Mist baut
+        suggest = use_case_result.get("suggest_show_frameworks") if isinstance(use_case_result, dict) else None
+        if suggest is False and controlled.get("mode") != "agents":
+            controlled["mode"] = "agents"
+        if suggest is True and controlled.get("mode") != "frameworks":
+            controlled["mode"] = "frameworks"
+
+        # 7) Advisor (final JSON)
+        r7 = Runner.run_sync(
+            AdvisorAgent,
+            [{"role": "user", "content": json.dumps(controlled, ensure_ascii=False)}],
+        )
+        final_obj = _extract_json(r7.final_output or "")
+        final_obj = _ensure_final_shape(final_obj)
+        _debug_print("Final", final_obj)
+
+        return AgentResponse(answer=json.dumps(final_obj, ensure_ascii=False))
+
+    except Exception as e:
+        error_obj = _ensure_final_shape({
+            "mode": "frameworks",
+            "agent_recommendations": [],
+            "framework_recommendations": [],
+            "error": str(e),
+        })
+        return AgentResponse(answer=json.dumps(error_obj, ensure_ascii=False))

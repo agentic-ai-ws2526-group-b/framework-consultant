@@ -1,6 +1,31 @@
 """
 PyPika is divided into a couple of modules, primarily the ``queries`` and ``terms`` modules.
 
+pypika.analytics
+----------------
+
+Wrappers for SQL analytic functions
+
+pypika.dialects
+---------------
+
+This contains all of the dialect specific implementations of the ``Query`` class.
+
+pypika.enums
+------------
+
+Enumerated values are kept in this package which are used as options for Queries and Terms.
+
+pypika.functions
+----------------
+
+Wrappers for common SQL functions are stored in this package.
+
+pypika.pseudocolumns
+--------------------
+
+Wrappers for common SQL pseudocolumns are stored in this package.
+
 pypika.queries
 --------------
 
@@ -13,27 +38,17 @@ pypika.terms
 
 This module contains the classes which represent individual parts of queries that extend the ``Term`` base class.
 
-pypika.functions
-----------------
-
-Wrappers for common SQL functions are stored in this package.
-
-pypika.enums
-------------
-
-Enumerated values are kept in this package which are used as options for Queries and Terms.
-
-
 pypika.utils
 ------------
 
 This contains all of the utility classes such as exceptions and decorators.
-
 """
+
 # noinspection PyUnresolvedReferences
 from pypika.dialects import (
     ClickHouseQuery,
     Dialects,
+    JiraQuery,
     MSSQLQuery,
     MySQLQuery,
     OracleQuery,
@@ -53,54 +68,113 @@ from pypika.enums import (
 # noinspection PyUnresolvedReferences
 from pypika.queries import (
     AliasedQuery,
+    Column,
+    Database,
     Query,
     Schema,
     Table,
-    Column,
-    Database,
-    make_tables as Tables,
+)
+from pypika.queries import (
     make_columns as Columns,
+)
+from pypika.queries import (
+    make_tables as Tables,
 )
 
 # noinspection PyUnresolvedReferences
 from pypika.terms import (
+    JSON,
     Array,
     Bracket,
     Case,
     Criterion,
+    CustomFunction,
     EmptyCriterion,
     Field,
+    FormatParameter,
     Index,
     Interval,
-    JSON,
+    NamedParameter,
     Not,
     NullValue,
-    SystemTimeValue,
-    Parameter,
-    QmarkParameter,
     NumericParameter,
-    NamedParameter,
-    FormatParameter,
+    Parameter,
     PyformatParameter,
+    QmarkParameter,
     Rollup,
+    SystemTimeValue,
     Tuple,
-    CustomFunction,
 )
 
 # noinspection PyUnresolvedReferences
 from pypika.utils import (
     CaseException,
+    FunctionException,
     GroupingException,
     JoinException,
     QueryException,
     RollupException,
     SetOperationException,
-    FunctionException,
 )
 
 __author__ = "Timothy Heys"
 __email__ = "theys@kayak.com"
-__version__ = "0.48.9"
+__version__ = "0.50.0"
 
 NULL = NullValue()
 SYSTEM_TIME = SystemTimeValue()
+
+__all__ = (
+    'ClickHouseQuery',
+    'Dialects',
+    'JiraQuery',
+    'MSSQLQuery',
+    'MySQLQuery',
+    'OracleQuery',
+    'PostgreSQLQuery',
+    'RedshiftQuery',
+    'SQLLiteQuery',
+    'VerticaQuery',
+    'DatePart',
+    'JoinType',
+    'Order',
+    'AliasedQuery',
+    'Query',
+    'Schema',
+    'Table',
+    'Column',
+    'Database',
+    'Tables',
+    'Columns',
+    'Array',
+    'Bracket',
+    'Case',
+    'Criterion',
+    'EmptyCriterion',
+    'Field',
+    'Index',
+    'Interval',
+    'JSON',
+    'Not',
+    'NullValue',
+    'SystemTimeValue',
+    'Parameter',
+    'QmarkParameter',
+    'NumericParameter',
+    'NamedParameter',
+    'FormatParameter',
+    'PyformatParameter',
+    'Rollup',
+    'Tuple',
+    'CustomFunction',
+    'CaseException',
+    'GroupingException',
+    'JiraQuery',
+    'JoinException',
+    'QueryException',
+    'RollupException',
+    'SetOperationException',
+    'FunctionException',
+    'NULL',
+    'SYSTEM_TIME',
+)
