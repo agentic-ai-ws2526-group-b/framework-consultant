@@ -126,8 +126,8 @@ def _build_query(req: AgentRequest) -> str:
     )
 
 
-def _distance_to_score(distance: Optional[float]) -> Optional[float]:
-    """Heuristik distance -> similarity score in [0, 1]."""
+def _distance_to_similarity(distance: Optional[float]) -> Optional[float]:
+    """Heuristik distance -> similarity score in [0, 1]. Nur als Debug / Vorfilter."""
     if distance is None:
         return None
     try:
@@ -138,83 +138,26 @@ def _distance_to_score(distance: Optional[float]) -> Optional[float]:
         return None
 
 
-# -----------------------------------------
-# Chroma: Use Cases (Agents) – similarity ranking
-# -----------------------------------------
-def _query_bosch_use_cases(query: str, n_results: int = 3) -> Dict[str, Any]:
-    results = usecase_collection.query(query_texts=[query], n_results=n_results)
-    docs = results.get("documents", [[]])[0]
-    metas = results.get("metadatas", [[]])[0]
-    dists = results.get("distances", [[]])[0]
+def _norm(s: str) -> str:
+    return re.sub(r"\s+", " ", (s or "").lower()).strip()
 
-    out: List[Dict[str, Any]] = []
-    for i in range(len(docs)):
-        meta = metas[i] if metas and i < len(metas) else {}
-        dist = float(dists[i]) if dists and i < len(dists) and dists[i] is not None else None
-        out.append(
-            {
-                "title": (meta.get("title") if isinstance(meta, dict) else None) or "Bosch Use Case",
-                "summary": docs[i],
-                "distance": dist,
-                "score": _distance_to_score(dist),
-                "metadata": meta if isinstance(meta, dict) else {},
-            }
-        )
-    return {"use_cases": out}
+
+def _tags_set(meta: Dict[str, Any]) -> set:
+    raw = ""
+    if isinstance(meta, dict):
+        raw = meta.get("tags") or ""
+    raw = _norm(raw)
+    parts = [t.strip() for t in re.split(r"[,;|]", raw) if t.strip()]
+    return set(parts)
+
+
+def _has_any(text: str, kws: List[str]) -> bool:
+    t = _norm(text)
+    return any(k in t for k in kws)
 
 
 # -----------------------------------------
-# Chroma: Framework docs query (RAG)
-# -----------------------------------------
-def _query_framework_docs(query: str, n_results: int = 3) -> Dict[str, Any]:
-    results = framework_collection.query(query_texts=[query], n_results=n_results)
-    docs = results.get("documents", [[]])[0]
-    metas = results.get("metadatas", [[]])[0]
-    out: List[Dict[str, Any]] = []
-    for i in range(len(docs)):
-        out.append({
-            "text": docs[i],
-            "meta": metas[i] if metas and i < len(metas) else {}
-        })
-    return {"docs": out}
-
-
-def _get_framework_snippets_for_framework(framework_name: str, query: str, n_results: int = 2) -> List[str]:
-    """
-    Holt kurze Text-Snippets aus framework_docs für ein spezifisches Framework.
-    Wir filtern auf framework=<name> und is_factsheet=False (nur Doku-Chunks).
-    """
-    try:
-        results = framework_collection.query(
-            query_texts=[query],
-            n_results=n_results,
-            where={"framework": framework_name, "is_factsheet": False},
-        )
-        docs = results.get("documents", [[]])[0]
-        return [d for d in docs if isinstance(d, str)]
-    except Exception:
-        return []
-
-
-# -----------------------------------------
-# Tools (Agents SDK)
-# -----------------------------------------
-@function_tool
-def search_bosch_use_cases(query: str, n_results: int = 3) -> Dict[str, Any]:
-    """Search in Bosch use cases stored in ChromaDB."""
-    return _query_bosch_use_cases(query=query, n_results=n_results)
-
-
-@function_tool
-def search_framework_docs(query: str, n_results: int = 3) -> Dict[str, Any]:
-    """Search in framework docs stored in ChromaDB."""
-    return _query_framework_docs(query=query, n_results=n_results)
-
-
-# -----------------------------------------
-# Deterministic scoring (Bewertungsmatrix)
-# - Ranking/Prozentwerte werden hier im Backend berechnet
-# - LLM erklärt nur Pro/Contra/Empfehlung
+# Deterministic scoring (Bewertungsmatrix) – EXISTIEREND (Frameworks)
 # -----------------------------------------
 PRIORITY_WEIGHTS_BY_KEY: Dict[str, Dict[str, float]] = {
     "speed": {"D1": 2.5, "D2": 0.75, "D3": 0.75, "D4": 0.75, "D5": 0.75, "D6": 1.5},
@@ -263,6 +206,239 @@ def _get_skill_mult(skill_level: Optional[str]) -> Dict[str, float]:
     return SKILL_MULTIPLIERS.get(skill_level, {d: 1.0 for d in DIMS})
 
 
+def _score_framework_dims(
+    dims: Dict[str, int],
+    weights: Dict[str, float],
+    agent_mult: Dict[str, float],
+    skill_mult: Dict[str, float],
+) -> Tuple[float, Dict[str, float]]:
+    per_dim: Dict[str, float] = {}
+    total = 0.0
+    for d in DIMS:
+        base = float(dims.get(d, 0))
+        contrib = base * weights[d] * agent_mult[d] * skill_mult[d]
+        per_dim[d] = contrib
+        total += contrib
+    return total, per_dim
+
+
+# -----------------------------------------
+# NEW: Use-Case -> RAW DIMS (1..5) deterministisch aus Text/Metadata
+# Ziel: dieselbe Bewertungsmatrix-Logik wie Frameworks nutzen
+# -----------------------------------------
+def _bucket_score(strong: bool, medium: bool, weak: bool) -> int:
+    if strong:
+        return 5
+    if medium:
+        return 4
+    if weak:
+        return 3
+    return 2
+
+
+def _use_case_raw_dims(doc_text: str, meta: Dict[str, Any]) -> Dict[str, int]:
+    """
+    Mappt Use Case auf D1..D6 Raw Scores (1..5) deterministisch.
+
+    Interpretation der Dims (aus deinen PRIORITY_WEIGHTS):
+      D1 = speed/time-to-value
+      D2 = tools/integrations
+      D3 = memory/rag/knowledge
+      D4 = multi-agent/workflow orchestration
+      D5 = privacy/compliance (bzw. governance/enterprise constraints)
+      D6 = maturity/operational readiness
+    """
+    text = _norm(doc_text)
+    tags = _tags_set(meta)
+    maturity = _norm((meta or {}).get("maturity", "unknown"))
+
+    exp = _norm((meta or {}).get("experience_level", "unknown"))
+    learn = _norm((meta or {}).get("learning_preference", "unknown"))
+
+    # D1 speed
+    d1_strong = _has_any(text, ["low effort", "quick", "fast", "short time", "schnell", "geringem aufwand"])
+    d1_medium = _has_any(text, ["standard", "template", "out of the box", "schnell umgesetzt", "kurz"])
+    d1_weak = ("onboarding" in tags) or ("assistant" in tags)
+
+    # D2 tools/integrations
+    d2_strong = ("sharepoint" in tags) or _has_any(text, ["connector", "connectors", "integration", "integrationen", "sharepoint", "tools"])
+    d2_medium = _has_any(text, ["sources", "quellen", "datenquellen", "api", "workflow"])
+    d2_weak = ("search" in tags)
+
+    # D3 rag/knowledge/memory
+    d3_strong = ("rag" in tags) or ("documentation" in tags) or ("qa" in tags) or ("knowledge" in tags) or _has_any(text, ["rag", "retrieval", "dokument", "knowledge"])
+    d3_medium = ("knowledge-management" in tags) or _has_any(text, ["handbuch", "manual", "spec", "wissensartikel", "troubleshooting"])
+    d3_weak = ("search" in tags) or _has_any(text, ["suche", "search"])
+
+    # D4 multi/workflow orchestration
+    d4_strong = ("multi-agent" in tags) or _has_any(text, ["multi-agent", "orchestr", "planner"])
+    d4_medium = ("workflow" in tags) or _has_any(text, ["workflow", "pipeline", "automation"])
+    d4_weak = _has_any(text, ["agent"])
+
+    # D5 privacy/compliance/governance
+    d5_strong = ("privacy" in tags) or ("security" in tags) or ("compliance" in tags) or _has_any(text, ["privacy", "datenschutz", "compliance", "on-prem", "security"])
+    d5_medium = _has_any(text, ["permissions", "berechtigung", "rechte", "access", "policy"])
+    d5_weak = False
+
+    # D6 maturity / operational readiness
+    # positives evidence vs limitations
+    d6_strong = ("production" in maturity) or _has_any(text, ["works very good", "very good", "gute ergebnisse", "effective", "in der praxis möglich"])
+    d6_medium = _has_any(text, ["achieved", "implemented", "standard"]) or (maturity not in ["", "unknown"])
+    d6_weak = _has_any(text, ["needs clarification", "must be clarified", "challenges", "müssen geklärt", "klarification", "connector- und berechtigungsfragen"])
+
+    raw = {
+        "D1": _bucket_score(d1_strong, d1_medium, d1_weak),
+        "D2": _bucket_score(d2_strong, d2_medium, d2_weak),
+        "D3": _bucket_score(d3_strong, d3_medium, d3_weak),
+        "D4": _bucket_score(d4_strong, d4_medium, d4_weak),
+        "D5": _bucket_score(d5_strong, d5_medium, d5_weak),
+        "D6": _bucket_score(d6_strong, d6_medium, d6_weak),
+    }
+
+    # kleine deterministische Anpassungen aus Meta:
+    if exp == "beginner":
+        raw["D6"] = min(5, raw["D6"] + 1)  # Anfänger profitieren von reifen/klarem UC
+    if learn == "simple":
+        raw["D1"] = min(5, raw["D1"] + 1)  # simple -> schneller/time-to-value
+
+    # clamp
+    for d in DIMS:
+        raw[d] = max(1, min(5, int(raw.get(d, 3))))
+
+    return raw
+
+
+# -----------------------------------------
+# Chroma: Use Cases retrieval (Vorfilter) + Matrix-Ranking
+# -----------------------------------------
+def _retrieve_bosch_use_cases(query: str, n_results: int = 15) -> List[Dict[str, Any]]:
+    """
+    Nur Retrieval: holt Top-N Kandidaten (documents+metadatas+distances).
+    Kein finales Ranking (das macht die Matrix).
+    """
+    results = usecase_collection.query(query_texts=[query], n_results=n_results)
+    docs = results.get("documents", [[]])[0]
+    metas = results.get("metadatas", [[]])[0]
+    dists = results.get("distances", [[]])[0]
+
+    out: List[Dict[str, Any]] = []
+    for i in range(len(docs)):
+        meta = metas[i] if metas and i < len(metas) else {}
+        dist = float(dists[i]) if dists and i < len(dists) and dists[i] is not None else None
+        out.append(
+            {
+                "title": (meta.get("agent_name") if isinstance(meta, dict) else None) or "Bosch Use Case",
+                "summary": docs[i],
+                "distance": dist,
+                "similarity": _distance_to_similarity(dist),
+                "metadata": meta if isinstance(meta, dict) else {},
+            }
+        )
+    return out
+
+
+def _rank_bosch_use_cases_matrix(req: AgentRequest, query: str, retrieval_n: int = 15, top_k: int = 3) -> List[Dict[str, Any]]:
+    """
+    Finales Ranking: gleiche Matrix-Logik wie Frameworks.
+    - Kandidaten kommen aus Chroma (retrieval_n)
+    - Dann RAW Dims ableiten, Matrix score berechnen, nach score_total sortieren
+    - match_percent relativ zu best innerhalb der Kandidaten (wie Framework-Ranking)
+    """
+    candidates = _retrieve_bosch_use_cases(query=query, n_results=retrieval_n)
+    if not candidates:
+        return []
+
+    weights = _avg_weights(req.priorities or [])
+    a_mult = _get_agent_mult(req.agent_type or "unknown")
+    s_mult = _get_skill_mult(req.experience_level)
+
+    scored: List[Tuple[Dict[str, Any], float, Dict[str, float], Dict[str, int]]] = []
+    for uc in candidates:
+        doc = uc.get("summary", "") or ""
+        meta = uc.get("metadata", {}) or {}
+
+        raw_dims = _use_case_raw_dims(doc_text=doc, meta=meta)
+        total, per_dim = _score_framework_dims(raw_dims, weights, a_mult, s_mult)
+
+        scored.append((uc, total, per_dim, raw_dims))
+
+    scored.sort(key=lambda x: x[1], reverse=True)
+    best = scored[0][1] if scored else 1.0
+    if best <= 0:
+        best = 1.0
+
+    out: List[Dict[str, Any]] = []
+    for uc, total, per_dim, raw_dims in scored[:top_k]:
+        match_percent = int(round((total / best) * 100))
+        match_percent = max(0, min(100, match_percent))
+
+        out.append({
+            "title": uc.get("title", "Bosch Use Case"),
+            "summary": uc.get("summary", ""),
+            "score_total": total,
+            "match_percent": match_percent,
+            "score": float(match_percent) / 100.0,  # UI erwartet 0..1
+            "metadata": uc.get("metadata", {}) or {},
+            # Debug optional:
+            "distance": uc.get("distance"),
+            "similarity": uc.get("similarity"),
+            "score_breakdown": {
+                "per_dim": per_dim,
+                "raw_dim_scores": raw_dims,
+                "weights": weights,
+                "agent_type_multipliers": a_mult,
+                "skill_multipliers": s_mult,
+            }
+        })
+
+    return out
+
+
+# -----------------------------------------
+# Chroma: Framework docs query (RAG)
+# -----------------------------------------
+def _query_framework_docs(query: str, n_results: int = 3) -> Dict[str, Any]:
+    results = framework_collection.query(query_texts=[query], n_results=n_results)
+    docs = results.get("documents", [[]])[0]
+    metas = results.get("metadatas", [[]])[0]
+    out: List[Dict[str, Any]] = []
+    for i in range(len(docs)):
+        out.append({
+            "text": docs[i],
+            "meta": metas[i] if metas and i < len(metas) else {}
+        })
+    return {"docs": out}
+
+
+def _get_framework_snippets_for_framework(framework_name: str, query: str, n_results: int = 2) -> List[str]:
+    """
+    Holt kurze Text-Snippets aus framework_docs für ein spezifisches Framework.
+    Wir filtern auf framework=<name> und is_factsheet=False (nur Doku-Chunks).
+    """
+    try:
+        results = framework_collection.query(
+            query_texts=[query],
+            n_results=n_results,
+            where={"framework": framework_name, "is_factsheet": False},
+        )
+        docs = results.get("documents", [[]])[0]
+        return [d for d in docs if isinstance(d, str)]
+    except Exception:
+        return []
+
+
+# -----------------------------------------
+# Tools (Agents SDK)
+# -----------------------------------------
+@function_tool
+def search_framework_docs(query: str, n_results: int = 3) -> Dict[str, Any]:
+    """Search in framework docs stored in ChromaDB."""
+    return _query_framework_docs(query=query, n_results=n_results)
+
+
+# -----------------------------------------
+# Framework Factsheets Loader (bestehend)
+# -----------------------------------------
 def _load_framework_factsheets_from_chroma() -> List[Dict[str, Any]]:
     """
     Lädt ALLE Framework-Factsheets aus der Collection framework_docs.
@@ -287,7 +463,6 @@ def _load_framework_factsheets_from_chroma() -> List[Dict[str, Any]]:
                 continue
 
             dims = {d: int(meta.get(d, 3)) for d in DIMS}
-            # Simple description: bevorzugt aus Factsheet-doc, sonst leer
             desc = ""
             if i < len(docs) and isinstance(docs[i], str):
                 desc = docs[i]
@@ -299,7 +474,6 @@ def _load_framework_factsheets_from_chroma() -> List[Dict[str, Any]]:
                 "url": meta.get("url"),
             })
 
-        # Dedupe by framework (falls du mehrfach ingestest)
         dedup: Dict[str, Dict[str, Any]] = {}
         for item in out:
             dedup[item["framework"]] = item
@@ -307,22 +481,6 @@ def _load_framework_factsheets_from_chroma() -> List[Dict[str, Any]]:
     except Exception as e:
         _debug_print("Factsheets load failed", str(e))
         return []
-
-
-def _score_framework_dims(
-    dims: Dict[str, int],
-    weights: Dict[str, float],
-    agent_mult: Dict[str, float],
-    skill_mult: Dict[str, float],
-) -> Tuple[float, Dict[str, float]]:
-    per_dim: Dict[str, float] = {}
-    total = 0.0
-    for d in DIMS:
-        base = float(dims.get(d, 0))
-        contrib = base * weights[d] * agent_mult[d] * skill_mult[d]
-        per_dim[d] = contrib
-        total += contrib
-    return total, per_dim
 
 
 def _rank_all_frameworks(req: AgentRequest) -> List[Dict[str, Any]]:
@@ -359,7 +517,7 @@ def _rank_all_frameworks(req: AgentRequest) -> List[Dict[str, Any]]:
             "url": fw.get("url"),
             "score_total": total,
             "match_percent": match_percent,
-            "score": float(match_percent) / 100.0,  # UI erwartet 0..1
+            "score": float(match_percent) / 100.0,
             "score_breakdown": {
                 "per_dim": per_dim,
                 "raw_dim_scores": fw["dims"],
@@ -373,7 +531,8 @@ def _rank_all_frameworks(req: AgentRequest) -> List[Dict[str, Any]]:
 
 
 # -----------------------------------------
-# Agents (Agents SDK)
+# Agents (Agents SDK) – nur noch für Requirements/Profiler/Decision/Control/Advisor
+# (Use-Case Ranking ist jetzt deterministisch via Matrix)
 # -----------------------------------------
 RequirementsAgent = Agent(
     name="RequirementsAgent",
@@ -405,22 +564,6 @@ ProfilerAgent = Agent(
     ),
 )
 
-UseCaseAnalyzerAgent = Agent(
-    name="UseCaseAnalyzer",
-    instructions=(
-        "Du bist der Use-Case Analyzer.\n"
-        "Nutze search_bosch_use_cases, um passende Bosch Use Cases zu finden.\n"
-        "Gib NUR JSON zurück:\n"
-        "{\n"
-        '  "use_cases": [{"title":"...","summary":"...","score":0.0,"metadata":{}}],\n'
-        '  "suggest_show_frameworks": boolean,\n'
-        '  "reason": "string"\n'
-        "}\n"
-        "Regel: suggest_show_frameworks=true, wenn es keine Use Cases gibt oder der beste Score < 0.35."
-    ),
-    tools=[search_bosch_use_cases],
-)
-
 DecisionAgent = Agent(
     name="DecisionAgent",
     instructions=(
@@ -444,6 +587,7 @@ DecisionAgent = Agent(
         "framework_texts MUSS gleiche Reihenfolge & Namen wie input.frameworks haben.\n"
         "Antwort NUR als JSON."
     ),
+    tools=[search_framework_docs],
 )
 
 ControlAgent = Agent(
@@ -479,22 +623,27 @@ def health():
 def use_cases(req: AgentRequest):
     """
     Direkt-Endpoint für UI: zeigt Bosch Use Cases (Agenten) zuerst.
+    NEU: Ranking via gleicher Bewertungsmatrix wie bei Frameworks.
     """
     try:
         query = _build_query(req)
-        res = _query_bosch_use_cases(query=query, n_results=3)
-        use_cases_list = res.get("use_cases", [])
 
-        best_score = None
-        if use_cases_list and isinstance(use_cases_list[0], dict):
-            best_score = use_cases_list[0].get("score")
+        ranked_use_cases = _rank_bosch_use_cases_matrix(
+            req=req,
+            query=query,
+            retrieval_n=15,
+            top_k=3
+        )
 
+        best_score = ranked_use_cases[0]["score"] if ranked_use_cases else None
+
+        # gleiche Regel wie vorher: wenn best < 0.35 -> Frameworks vorschlagen
         suggest_show_frameworks = True
         if best_score is not None and best_score >= 0.35:
             suggest_show_frameworks = False
 
         return {
-            "use_cases": use_cases_list,
+            "use_cases": ranked_use_cases,
             "suggest_show_frameworks": suggest_show_frameworks,
             "best_score": best_score,
         }
@@ -506,9 +655,9 @@ def use_cases(req: AgentRequest):
 def run_agent(req: AgentRequest):
     """
     Orchestrierung:
-      - Agents/UseCases: via Chroma similarity
+      - Use Cases: deterministisch via Bewertungsmatrix (Chroma nur als Retrieval-Vorfilter)
       - Frameworks: deterministisch via Bewertungsmatrix über ALLE Frameworks (Factsheets in Chroma)
-      - LLM: nur Pro/Contra/Empfehlungstexte (Hard Rules)
+      - LLM: nur Requirements/Profiler + Pro/Contra/Empfehlungstexte (Hard Rules)
     """
     try:
         _debug_print("Request /agent", req.dict())
@@ -534,30 +683,34 @@ def run_agent(req: AgentRequest):
         profiler = _extract_json(r2.final_output or "")
         _debug_print("ProfilerAgent", profiler)
 
-        # 3) UseCaseAnalyzer (LLM + tool) -> Bosch Use Cases
-        query = requirements.get("requirements_summary") or _build_query(req)
-        r3 = Runner.run_sync(
-            UseCaseAnalyzerAgent,
-            [{"role": "user", "content": query}],
+        # 3) Use Cases deterministisch ranken (Matrix)
+        query_for_usecases = requirements.get("requirements_summary") or _build_query(req)
+        ranked_use_cases = _rank_bosch_use_cases_matrix(
+            req=req,
+            query=query_for_usecases,
+            retrieval_n=15,
+            top_k=3
         )
-        use_case_result = _extract_json(r3.final_output or "")
-        _debug_print("UseCaseAnalyzer", use_case_result)
+        _debug_print("Ranked use cases (matrix)", ranked_use_cases)
 
-        suggest = use_case_result.get("suggest_show_frameworks") if isinstance(use_case_result, dict) else True
-        want_frameworks = bool(req.force_frameworks) or bool(suggest)
+        best_uc_score = ranked_use_cases[0]["score"] if ranked_use_cases else None
+
+        # gleiche Regel: wenn keine UC oder best < 0.35 -> framework mode
+        suggest_show_frameworks = True
+        if best_uc_score is not None and best_uc_score >= 0.35:
+            suggest_show_frameworks = False
+
+        want_frameworks = bool(req.force_frameworks) or bool(suggest_show_frameworks)
 
         # 4) Framework ranking deterministisch über ALLE Frameworks
-        ranked = _rank_all_frameworks(req)
-        _debug_print("Ranked frameworks count", len(ranked))
-
-        # Wenn keine Factsheets existieren -> leere Liste (dein Ingest muss laufen)
-        top3 = ranked[:3] if ranked else []
+        ranked_fw = _rank_all_frameworks(req)
+        _debug_print("Ranked frameworks count", len(ranked_fw))
+        top3_fw = ranked_fw[:3] if ranked_fw else []
 
         if want_frameworks:
             # 5) RAG Snippets pro Top-Framework (optional, für bessere Texte)
-            #    (LLM darf daraus nur Texte machen, nicht scoren)
             frameworks_for_llm: List[Dict[str, Any]] = []
-            for fw in top3:
+            for fw in top3_fw:
                 name = fw["framework"]
                 snippets = _get_framework_snippets_for_framework(name, query=req.use_case, n_results=2)
                 frameworks_for_llm.append({
@@ -592,7 +745,7 @@ def run_agent(req: AgentRequest):
                         texts_by_name[str(item["framework"])] = item
 
             framework_recs: List[Dict[str, Any]] = []
-            for fw in top3:
+            for fw in top3_fw:
                 name = fw["framework"]
                 t = texts_by_name.get(name, {})
                 framework_recs.append({
@@ -603,7 +756,6 @@ def run_agent(req: AgentRequest):
                     "pros": t.get("pros", []),
                     "cons": t.get("cons", []),
                     "recommendation": t.get("recommendation", ""),
-                    # optional extra Debug/Trace
                     "match_percent": fw.get("match_percent"),
                     "score_breakdown": fw.get("score_breakdown"),
                     "url": fw.get("url"),
@@ -614,20 +766,19 @@ def run_agent(req: AgentRequest):
                 "agent_recommendations": [],
                 "framework_recommendations": framework_recs,
             }
-        else:
-            # Agents mode: Use Cases direkt (Ranking kommt aus similarity score)
-            use_cases_list = []
-            if isinstance(use_case_result, dict) and isinstance(use_case_result.get("use_cases"), list):
-                use_cases_list = use_case_result["use_cases"]
 
+        else:
+            # Agents mode: Use Cases aus Matrix-Ranking
             agent_recs = []
-            for uc in use_cases_list[:3]:
-                if isinstance(uc, dict):
-                    agent_recs.append({
-                        "title": uc.get("title", "Bosch Use Case"),
-                        "summary": uc.get("summary", ""),
-                        "score": uc.get("score", 0.0),
-                    })
+            for uc in ranked_use_cases[:3]:
+                agent_recs.append({
+                    "title": uc.get("title", "Bosch Use Case"),
+                    "summary": uc.get("summary", ""),
+                    "score": uc.get("score", 0.0),
+                    "match_percent": uc.get("match_percent", int(round((uc.get("score", 0.0) or 0.0) * 100))),
+                    "score_breakdown": uc.get("score_breakdown"),
+                    "metadata": uc.get("metadata", {}),
+                })
 
             final_obj = {
                 "mode": "agents",
