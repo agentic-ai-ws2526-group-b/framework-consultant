@@ -13,6 +13,8 @@ from services.utils import debug_print, extract_json, ensure_final_shape
 from services.chroma_client import get_chroma_client, get_collections
 from services.tools import build_tool_functions, query_bosch_use_cases, get_framework_snippets_for_framework
 from services.scoring import rank_all_frameworks
+from services.scoring_peer import score_frameworks
+
 
 from app_agents.requirements_agent import build_requirements_agent
 from app_agents.profiler_agent import build_profiler_agent
@@ -165,9 +167,16 @@ def run_agent(req: AgentRequest):
         want_frameworks = bool(req.force_frameworks) or bool(suggest)
 
         # 4) Deterministic framework ranking (matrix)
-        ranked = rank_all_frameworks(req, framework_collection)
-        debug_print("Ranked frameworks count", len(ranked))
-        top3 = ranked[:3] if ranked else []
+        ranked_simple = score_frameworks(
+            agent_type=req.agent_type,
+            priorities=req.priorities or [],
+            use_case_text=req.use_case,
+            skill_level=req.experience_level,
+        )
+
+        # top3 frameworks
+        top3 = ranked_simple[:3] if ranked_simple else []
+
 
         if want_frameworks:
             frameworks_for_llm: List[Dict[str, Any]] = []
@@ -210,16 +219,16 @@ def run_agent(req: AgentRequest):
                 t = texts_by_name.get(name, {})
                 framework_recs.append({
                     "framework": name,
-                    "score": fw["score"],
+                    "score": float(fw["score"]),  # 0..1
                     "description": t.get("description", ""),
                     "match_reason": t.get("match_reason", ""),
                     "pros": t.get("pros", []),
                     "cons": t.get("cons", []),
                     "recommendation": t.get("recommendation", ""),
-                    "match_percent": fw.get("match_percent"),
-                    "score_breakdown": fw.get("score_breakdown"),
-                    "url": fw.get("url"),
+                    "match_percent": int(round(float(fw["score"]) * 100)),
+                    "url": None,  # optional: kannst du weiterhin aus Chroma-Factsheet meta ziehen, wenn du willst
                 })
+
 
             final_obj = {
                 "mode": "frameworks",
