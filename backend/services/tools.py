@@ -15,7 +15,12 @@ def distance_to_score(distance: Optional[float]) -> Optional[float]:
         return None
 
 def query_bosch_use_cases(usecase_collection, query: str, n_results: int = 3) -> Dict[str, Any]:
-    results = usecase_collection.query(query_texts=[query], n_results=n_results)
+    results = usecase_collection.query(
+        query_texts=[query],
+        n_results=n_results,
+        include=["documents", "metadatas", "distances"],  # explizit, robuster
+    )
+    ids = results.get("ids", [[]])[0]
     docs = results.get("documents", [[]])[0]
     metas = results.get("metadatas", [[]])[0]
     dists = results.get("distances", [[]])[0]
@@ -24,9 +29,12 @@ def query_bosch_use_cases(usecase_collection, query: str, n_results: int = 3) ->
     for i in range(len(docs)):
         meta = metas[i] if metas and i < len(metas) else {}
         dist = float(dists[i]) if dists and i < len(dists) and dists[i] is not None else None
+        uc_id = ids[i] if ids and i < len(ids) else None
+
         out.append(
             {
-                "title": (meta.get("title") if isinstance(meta, dict) else None) or "Bosch Use Case",
+                "id": uc_id,  # ✅ NEU: damit wir später documents/metas gezielt nachladen können
+                "title": (meta.get("title") if isinstance(meta, dict) else None) or (meta.get("agent_name") if isinstance(meta, dict) else None) or "Bosch Use Case",
                 "summary": docs[i],
                 "distance": dist,
                 "score": distance_to_score(dist),
@@ -34,6 +42,7 @@ def query_bosch_use_cases(usecase_collection, query: str, n_results: int = 3) ->
             }
         )
     return {"use_cases": out}
+
 
 def query_framework_docs(framework_collection, query: str, n_results: int = 3) -> Dict[str, Any]:
     results = framework_collection.query(query_texts=[query], n_results=n_results)

@@ -12,7 +12,6 @@ from agents import Runner
 from services.utils import debug_print, extract_json, ensure_final_shape
 from services.chroma_client import get_chroma_client, get_collections
 from services.tools import build_tool_functions, query_bosch_use_cases, get_framework_snippets_for_framework
-from services.scoring import rank_all_frameworks
 from services.scoring_peer import score_frameworks
 
 
@@ -107,28 +106,59 @@ def health():
     return {"status": "ok"}
 
 
+def _match01(a: str, b: str) -> float:
+    return 1.0 if (a or "").strip().lower() == (b or "").strip().lower() else 0.0
+
+def _tag_match(priorities: List[str], meta_tags_csv: str) -> float:
+    pr = set((priorities or []))
+    tags = set(t.strip().lower() for t in (meta_tags_csv or "").split(",") if t.strip())
+    if not pr or not tags:
+        return 0.0
+    # priorities keys: rag/tools/multi/privacy/speed/memory
+    return len(pr.intersection(tags)) / max(1, len(pr))
+
 @app.post("/use-cases")
 def use_cases(req: AgentRequest):
     try:
         query = build_query(req)
-        res = query_bosch_use_cases(usecase_collection, query=query, n_results=3)
-        use_cases_list = res.get("use_cases", [])
 
-        best_score = None
-        if use_cases_list and isinstance(use_cases_list[0], dict):
-            best_score = use_cases_list[0].get("score")
+        # Mehr Kandidaten holen -> stabileres Top3 nach Boosting
+        res = query_bosch_use_cases(usecase_collection, query=query, n_results=15)
+        use_cases_list = res.get("use_cases", []) or []
 
-        suggest_show_frameworks = True
-        if best_score is not None and best_score >= 0.35:
-            suggest_show_frameworks = False
+        scored = []
+        for uc in use_cases_list:
+            meta = uc.get("metadata", {}) or {}
+            sim = float(uc.get("score") or 0.0)  # 0..1 aus distance_to_score
+
+            exp_m = _match01(req.experience_level, meta.get("experience_level"))
+            learn_m = _match01(req.learning_preference, meta.get("learning_preference"))
+            tag_m = _tag_match(req.priorities or [], meta.get("tags", ""))
+
+            # Weighted blend (Similarity dominiert)
+            final = 0.80 * sim + 0.10 * exp_m + 0.10 * learn_m + 0.05 * tag_m
+            final = max(0.0, min(1.0, final))
+
+            scored.append({**uc, "score": final, "match_percent": int(round(final * 100))})
+
+        scored.sort(key=lambda x: x["score"], reverse=True)
+        top = scored[:3]
+        best = top[0]["score"] if top else None
+
+        # ✅ UI-Logik: wenn wir Use Cases haben, sollen sie angezeigt werden
+        # -> suggest_show_frameworks MUSS dann false sein
+        suggest_show_frameworks = False if top else True
 
         return {
-            "use_cases": use_cases_list,
+            "use_cases": top,
             "suggest_show_frameworks": suggest_show_frameworks,
-            "best_score": best_score,
+            "best_score": best,
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+
 
 
 @app.post("/agent", response_model=AgentResponse)
