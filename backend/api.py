@@ -14,14 +14,12 @@ from services.chroma_client import get_chroma_client, get_collections
 from services.tools import build_tool_functions, query_bosch_use_cases, get_framework_snippets_for_framework
 from services.scoring_peer import score_frameworks
 
-
 from app_agents.requirements_agent import build_requirements_agent
 from app_agents.profiler_agent import build_profiler_agent
 from app_agents.usecase_analyzer_agent import build_usecase_analyzer_agent
 from app_agents.decision_agent import build_decision_agent
 from app_agents.control_agent import build_control_agent
 from app_agents.advisor_agent import build_advisor_agent
-
 
 
 # -----------------------------------------
@@ -69,6 +67,9 @@ class AgentRequest(BaseModel):
     learning_preference: Optional[str] = None
     force_frameworks: Optional[bool] = False
 
+    # ✅ NEU: Chat (optional)
+    chat_question: Optional[str] = None
+
 
 class AgentResponse(BaseModel):
     answer: str
@@ -85,6 +86,19 @@ def build_query(req: AgentRequest) -> str:
         f"Experience Level: {req.experience_level or 'unknown'}\n"
         f"Learning Preference: {req.learning_preference or 'unknown'}"
     )
+
+
+def _match01(a: str, b: str) -> float:
+    return 1.0 if (a or "").strip().lower() == (b or "").strip().lower() else 0.0
+
+
+def _tag_match(priorities: List[str], meta_tags_csv: str) -> float:
+    pr = set((priorities or []))
+    tags = set(t.strip().lower() for t in (meta_tags_csv or "").split(",") if t.strip())
+    if not pr or not tags:
+        return 0.0
+    # priorities keys: rag/tools/multi/privacy/speed/memory
+    return len(pr.intersection(tags)) / max(1, len(pr))
 
 
 # -----------------------------------------
@@ -106,30 +120,23 @@ def health():
     return {"status": "ok"}
 
 
-def _match01(a: str, b: str) -> float:
-    return 1.0 if (a or "").strip().lower() == (b or "").strip().lower() else 0.0
-
-def _tag_match(priorities: List[str], meta_tags_csv: str) -> float:
-    pr = set((priorities or []))
-    tags = set(t.strip().lower() for t in (meta_tags_csv or "").split(",") if t.strip())
-    if not pr or not tags:
-        return 0.0
-    # priorities keys: rag/tools/multi/privacy/speed/memory
-    return len(pr.intersection(tags)) / max(1, len(pr))
-
 @app.post("/use-cases")
 def use_cases(req: AgentRequest):
+    """
+    Liefert Top-3 Bosch Use Cases. Wenn wir Use Cases haben,
+    soll im UI zuerst Use Cases angezeigt werden:
+    -> suggest_show_frameworks = False
+    """
     try:
         query = build_query(req)
 
-        # Mehr Kandidaten holen -> stabileres Top3 nach Boosting
         res = query_bosch_use_cases(usecase_collection, query=query, n_results=15)
         use_cases_list = res.get("use_cases", []) or []
 
         scored = []
         for uc in use_cases_list:
             meta = uc.get("metadata", {}) or {}
-            sim = float(uc.get("score") or 0.0)  # 0..1 aus distance_to_score
+            sim = float(uc.get("score") or 0.0)  # 0..1
 
             exp_m = _match01(req.experience_level, meta.get("experience_level"))
             learn_m = _match01(req.learning_preference, meta.get("learning_preference"))
@@ -145,8 +152,6 @@ def use_cases(req: AgentRequest):
         top = scored[:3]
         best = top[0]["score"] if top else None
 
-        # ✅ UI-Logik: wenn wir Use Cases haben, sollen sie angezeigt werden
-        # -> suggest_show_frameworks MUSS dann false sein
         suggest_show_frameworks = False if top else True
 
         return {
@@ -158,13 +163,23 @@ def use_cases(req: AgentRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-
-
-
 @app.post("/agent", response_model=AgentResponse)
 def run_agent(req: AgentRequest):
+    """
+    Originaler Recommendation-Flow + zusätzlicher Chat-Modus.
+    Chat-Modus wird aktiv, wenn chat_question gesetzt ist.
+    """
     try:
         debug_print("Request /agent", req.dict())
+
+        # ✅ CHAT MODE: nutzt dein existierendes LLM/Agent-Setup (AdvisorAgent)
+        # Rückgabe ist einfacher Text in AgentResponse.answer
+        if req.chat_question and req.chat_question.strip():
+            r_chat = Runner.run_sync(
+                AdvisorAgent,
+                [{"role": "user", "content": req.chat_question.strip()}],
+            )
+            return AgentResponse(answer=r_chat.final_output or "")
 
         # 1) Requirements
         r1 = Runner.run_sync(
@@ -187,7 +202,7 @@ def run_agent(req: AgentRequest):
         profiler = extract_json(r2.final_output or "")
         debug_print("ProfilerAgent", profiler)
 
-        # 3) UseCaseAnalyzer
+        # 3) UseCaseAnalyzer (entscheidet, ob Frameworks gezeigt werden sollen)
         query = requirements.get("requirements_summary") or build_query(req)
         r3 = Runner.run_sync(UseCaseAnalyzerAgent, [{"role": "user", "content": query}])
         use_case_result = extract_json(r3.final_output or "")
@@ -207,12 +222,14 @@ def run_agent(req: AgentRequest):
         # top3 frameworks
         top3 = ranked_simple[:3] if ranked_simple else []
 
-
         if want_frameworks:
+            # --- Frameworks für LLM vorbereiten (Snippets etc.)
             frameworks_for_llm: List[Dict[str, Any]] = []
             for fw in top3:
                 name = fw["framework"]
-                snippets = get_framework_snippets_for_framework(framework_collection, name, req.use_case, n_results=2)
+                snippets = get_framework_snippets_for_framework(
+                    framework_collection, name, req.use_case, n_results=2
+                )
                 frameworks_for_llm.append({
                     "framework": name,
                     "snippets": snippets,
@@ -237,35 +254,40 @@ def run_agent(req: AgentRequest):
             decision_texts = extract_json(r4.final_output or "")
             debug_print("DecisionAgent(Texts)", decision_texts)
 
+            # Texte pro Framework mappen
             texts_by_name: Dict[str, Dict[str, Any]] = {}
             if isinstance(decision_texts, dict) and isinstance(decision_texts.get("framework_texts"), list):
                 for item in decision_texts["framework_texts"]:
                     if isinstance(item, dict) and item.get("framework"):
                         texts_by_name[str(item["framework"])] = item
 
+            # ✅ WICHTIG: score + match_percent wieder so wie ursprünglich
             framework_recs: List[Dict[str, Any]] = []
             for fw in top3:
                 name = fw["framework"]
                 t = texts_by_name.get(name, {})
+                s = float(fw.get("score", 0.0))  # 0..1
+
                 framework_recs.append({
                     "framework": name,
-                    "score": float(fw["score"]),  # 0..1
+                    "score": s,  # 0..1
                     "description": t.get("description", ""),
                     "match_reason": t.get("match_reason", ""),
                     "pros": t.get("pros", []),
                     "cons": t.get("cons", []),
                     "recommendation": t.get("recommendation", ""),
-                    "match_percent": int(round(float(fw["score"]) * 100)),
-                    "url": None,  # optional: kannst du weiterhin aus Chroma-Factsheet meta ziehen, wenn du willst
+                    "match_percent": int(round(s * 100)),
+                    "url": None,  # optional
                 })
-
 
             final_obj = {
                 "mode": "frameworks",
                 "agent_recommendations": [],
                 "framework_recommendations": framework_recs,
             }
+
         else:
+            # Bosch Use Cases aus UseCaseAnalyzer
             use_cases_list = []
             if isinstance(use_case_result, dict) and isinstance(use_case_result.get("use_cases"), list):
                 use_cases_list = use_case_result["use_cases"]
@@ -277,6 +299,7 @@ def run_agent(req: AgentRequest):
                         "title": uc.get("title", "Bosch Use Case"),
                         "summary": uc.get("summary", ""),
                         "score": uc.get("score", 0.0),
+                        "match_percent": uc.get("match_percent"),  # falls vorhanden
                     })
 
             final_obj = {
