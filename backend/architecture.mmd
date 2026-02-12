@@ -1,0 +1,10 @@
+flowchart LR
+  UI[UI (Next.js)] -->|POST /use-cases| API[FastAPI api.py]
+  UI -->|POST /agent| API
+
+  API --> Req[RequirementsAgent]
+  Req --> Prof[ProfilerAgent]
+  Prof --> UCA[UseCaseAnalyzerAgent]
+  UCA --> Dec[DecisionAgent]
+  Dec --> Ctrl[ControlAgent]
+  Ctrl --> Adv[AdvisorAgent]
