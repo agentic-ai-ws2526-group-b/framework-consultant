@@ -1,6 +1,7 @@
 # services/tools.py
 from typing import Any, Dict, List, Optional
 from agents.tool import function_tool
+import chromadb
 
 DIMS = ["D1", "D2", "D3", "D4", "D5", "D6"]
 
@@ -53,15 +54,36 @@ def query_framework_docs(framework_collection, query: str, n_results: int = 3) -
         out.append({"text": docs[i], "meta": metas[i] if metas and i < len(metas) else {}})
     return {"docs": out}
 
-def get_framework_snippets_for_framework(framework_collection, framework_name: str, query: str, n_results: int = 2) -> List[str]:
+def get_framework_snippets_for_framework(
+    framework_collection,
+    framework_name: str,
+    query_text: str,
+    n_results: int = 3,
+) -> List[Dict[str, Any]]:
+    """
+    Queryt Chroma nach den relevantesten Chunks für ein bestimmtes Framework.
+    Filtert Factsheets raus, weil die separat geholt werden.
+    """
     try:
-        results = framework_collection.query(
-            query_texts=[query],
+        res = framework_collection.query(
+            query_texts=[query_text],
             n_results=n_results,
             where={"framework": framework_name, "is_factsheet": False},
+            include=["documents", "metadatas", "distances"],
         )
-        docs = results.get("documents", [[]])[0]
-        return [d for d in docs if isinstance(d, str)]
+
+        docs = (res.get("documents") or [[]])[0]
+        metas = (res.get("metadatas") or [[]])[0]
+        dists = (res.get("distances") or [[]])[0]
+
+        out = []
+        for i in range(min(len(docs), len(metas), len(dists))):
+            out.append({
+                "text": docs[i],
+                "metadata": metas[i],
+                "distance": float(dists[i]),
+            })
+        return out
     except Exception:
         return []
 
